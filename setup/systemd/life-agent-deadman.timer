@@ -1,0 +1,9 @@
+[Unit]
+Description=life-agent: dead-man's switch, 08:00 daily
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

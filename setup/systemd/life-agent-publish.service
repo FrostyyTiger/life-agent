@@ -1,0 +1,16 @@
+[Unit]
+Description=life-agent: secret-scan and push the data repo
+After=network-online.target
+Wants=network-online.target
+
+# TEMPLATE — substitute __OWNER__, __CODE_DIR__ and __DATA_DIR__ before installing.
+#
+# Runs as the owner, NOT as life-agent. This is the separation described in
+# docs/trust-model.md: the agent commits, but a principal that never reads untrusted
+# input decides what leaves the machine. The agent holds no credential for any remote.
+
+[Service]
+Type=oneshot
+User=__OWNER__
+Environment=LIFE_AGENT_DATA=__DATA_DIR__
+ExecStart=__CODE_DIR__/setup/publish.sh

@@ -1,0 +1,40 @@
+[Unit]
+Description=life-agent: generate the morning brief
+Documentation=https://github.com/FrostyyTiger/life-agent
+After=network-online.target
+Wants=network-online.target
+
+# TEMPLATE — substitute __OWNER__, __CODE_DIR__ and __DATA_DIR__ before installing.
+# See setup/README.md. This repo deliberately contains no path to a real installation.
+
+[Service]
+Type=oneshot
+User=life-agent
+Group=life-agent
+WorkingDirectory=__CODE_DIR__
+Environment=LIFE_AGENT_DATA=__DATA_DIR__
+Environment=LIFE_AGENT_CONF=__CONF_DIR__
+ExecStart=/usr/bin/python3 -m src.main
+
+# Defence in depth. The filesystem boundaries in docs/trust-model.md are the primary
+# control; these narrow what a confused or manipulated process can reach even if a
+# permission is wrong somewhere.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__DATA_DIR__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# The job must not hang silently. A wedged run produces no brief, which the dead-man's
+# switch catches at 08:00 — but failing fast is better than failing at the deadline.
+TimeoutStartSec=10min

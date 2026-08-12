@@ -1,0 +1,12 @@
+[Unit]
+Description=life-agent: run the brief job every morning
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+# If the machine was off at 07:00, still run — a late brief beats no brief.
+Persistent=true
+# Small jitter so a provider outage does not correlate with a fixed second.
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

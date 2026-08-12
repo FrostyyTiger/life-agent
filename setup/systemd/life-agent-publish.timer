@@ -1,0 +1,10 @@
+[Unit]
+Description=life-agent: push the data repo, 07:30 daily
+
+[Timer]
+OnCalendar=*-*-* 07:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
