@@ -2,9 +2,13 @@
 # This is the public half. Real threads, real briefs, real config and any
 # credential live in the private data repo or in ~/.config/life-agent/.
 # These patterns are a backstop, not the boundary — see docs/trust-model.md.
-threads/
-briefs/
-config.yaml
+#
+# Anchored with a leading slash on purpose: unanchored `threads/` also matches
+# `examples/threads/`, which silently excluded the synthetic fixtures the
+# README and CI both depend on.
+/threads/
+/briefs/
+/config.yaml
 *.token
 *.credentials.json
 .env

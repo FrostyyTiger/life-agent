@@ -1,0 +1,32 @@
+# Example configuration. The real one lives at $LIFE_AGENT_DATA/config.yaml in the
+# private data repo, is owned by you, and is read-only to the agent.
+
+calendar_id: primary
+lookahead: 14d
+
+# Applied when a thread omits these. Deliberately conservative: it is better for a new
+# thread to surface slightly too early than to be invisible.
+defaults:
+  patience: 14d
+  lead: 7d
+
+brief:
+  time: "07:00"
+  max_urgent: 3        # hard cap on "Needs you today". Never raise this.
+  timezone: Europe/Zurich
+
+# Threads carrying any of these tags are evaluated locally by date arithmetic and appear in
+# the brief as a title and a date only. Their bodies are never sent to the model API.
+# See docs/egress.md, row 1.
+exclude_tags:
+  - medical
+  - finance
+
+model:
+  endpoint: anthropic
+  name: claude-sonnet-5
+
+publish:
+  remote: origin
+  branch: main
+  secret_scan: true    # pre-push gitleaks. Do not disable.
