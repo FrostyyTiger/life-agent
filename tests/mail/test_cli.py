@@ -109,3 +109,19 @@ def test_show_json_output(env_dirs, capsys, fixture_ingester):
     assert exit_code == 0
     row = json.loads(capsys.readouterr().out)
     assert row["id"] == "m005"
+
+
+def test_auth_without_client_secrets_prints_need_marcel(env_dirs, capsys):
+    exit_code = cli.main(["auth", "readonly"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("NEED-MARCEL:")
+    assert "google-client.json" in err
+
+
+def test_sync_without_token_prints_need_marcel(env_dirs, capsys):
+    exit_code = cli.main(["sync"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("NEED-MARCEL:")
+    assert "mail auth" in err

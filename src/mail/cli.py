@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 
+from src.mail import gmail
 from src.mail import search as search_mod
 from src.mail import store
 from src.mail.config import ConfigError, Env, MailConfig, load_config, load_env
@@ -104,6 +105,38 @@ def cmd_show(env: Env, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auth(env: Env, args: argparse.Namespace) -> int:
+    try:
+        if args.scope == "readonly":
+            gmail.auth_readonly(env.conf_dir)
+        else:
+            gmail.auth_insert(env.conf_dir)
+    except gmail.GmailAuthError as exc:
+        print(f"NEED-MARCEL: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_sync(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
+    try:
+        credentials = gmail.load_credentials(env.conf_dir, gmail.READONLY_TOKEN_FILENAME)
+    except gmail.GmailAuthError as exc:
+        print(f"NEED-MARCEL: {exc}", file=sys.stderr)
+        return 2
+
+    service = gmail.build_service(credentials)
+    port = gmail.RealGmailPort(service)
+
+    conn = store.connect(_db_path(env))
+    try:
+        result = gmail.sync(conn, port, config, budget_seconds=args.budget)
+    finally:
+        conn.close()
+
+    print(f"sync: mode={result.mode} fetched={result.fetched} done={result.done}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mail")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -122,6 +155,12 @@ def build_parser() -> argparse.ArgumentParser:
     show_parser = subparsers.add_parser("show", help="show one message")
     show_parser.add_argument("id")
     show_parser.add_argument("--json", action="store_true")
+
+    auth_parser = subparsers.add_parser("auth", help="run the Gmail OAuth flow")
+    auth_parser.add_argument("scope", choices=["readonly", "insert"])
+
+    sync_parser = subparsers.add_parser("sync", help="fetch new/changed mail from Gmail")
+    sync_parser.add_argument("--budget", type=float, default=None, help="seconds")
 
     return parser
 
@@ -143,6 +182,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_search(env, args)
     if args.command == "show":
         return cmd_show(env, args)
+    if args.command == "auth":
+        return cmd_auth(env, args)
+    if args.command == "sync":
+        return cmd_sync(env, config, args)
 
     parser.error(f"unknown command: {args.command}")
     return 2

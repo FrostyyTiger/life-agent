@@ -148,3 +148,66 @@ had been (ab)using FTS's `OR` operator to combine several fixtures into one quer
 rewritten — two against a small set of synthetic messages sharing a common word instead
 of the real fixtures, since AND-of-literal-terms means that trick no longer works, and
 real user queries were never going to look like `"word1 OR word2 OR word3"` anyway.
+
+## Stage 3 — Gmail auth + sync
+
+**Done** (code + fake-client tests, per the plan's order — the real run needs
+NEED-MARCEL items 1/2/4 below).
+
+- `src/mail/gmail.py`: sync logic (`sync()` and everything it calls) is written
+  against a small duck-typed `GmailPort` interface — `get_profile`,
+  `list_all_message_ids`, `list_recent_message_ids`, `get_messages`, `collect_history`
+  — rather than directly against `googleapiclient`'s dynamically-built `Resource`
+  objects. `RealGmailPort` wraps the real API (batched fetch via
+  `BatchHttpRequest`, `num_retries=5` on every `.execute()` for the 429/5xx backoff the
+  plan asks for); `tests/mail/fake_gmail.py`'s `FakeGmailPort` serves
+  `examples/mail/*.eml` and models Gmail's history/backfill semantics (seed / deliver /
+  delete / expire_history_before) well enough to exercise every path in `sync()`. This
+  *is* the "fake Gmail client" stage 1 flagged as deferred — built now against the real
+  interface `gmail.py` actually needs, not a guessed one.
+- **Deviation from the plan text:** messages are fetched with `format="raw"`, not
+  `format="full"`. `extract.py` already parses raw RFC 822 bytes; reconstructing
+  equivalent bytes from Gmail's `format=full` JSON payload tree would mean
+  re-implementing MIME assembly for no benefit, and `snippet`/`labelIds`/`historyId`/
+  `internalDate` are present in the message resource either way.
+- `sync()`: `pending` (id, added_at) is the single resumable work queue for both the
+  initial backfill and any incremental run that hits its budget — draining it is
+  always the first thing a sync call does. Backfill: record `profile.historyId` before
+  paging `messages.list` so nothing that arrives mid-discovery is missed, queue every
+  id into `pending`, then drain in batches of 50 respecting `--budget`; resuming a
+  half-drained backfill just continues draining, no re-listing. Incremental:
+  `history.list(startHistoryId)` for added/deleted, `HistoryExpired` (404) falls back
+  to `messages.list(q="after:<2 days ago>")`. `is_from_owner` compares the extracted
+  `from_addr` against `config.mail.address` (case-insensitively).
+- `mail auth readonly|insert`: `InstalledAppFlow.from_client_secrets_file` +
+  `run_local_server(port=8765, open_browser=False)`, prints the SSH port-forward
+  reminder and the Production-publishing-status warning, writes the token `0600`.
+  Missing `google-client.json` or a missing/expired token surfaces as `NEED-MARCEL:` on
+  stdout/stderr and exit 2, per the kickoff protocol, rather than a stack trace.
+- `mail sync [--budget SECONDS]` wired into `cli.py`.
+
+**Verified:**
+- `uv run pytest` — 74 passed. New: 9 sync tests against `FakeGmailPort` (full
+  backfill, `is_from_owner`, a budget-cutoff mid-backfill and its resume, resuming from
+  a `pending` table left by a prior interrupted run, incremental add+delete, a
+  no-op incremental run, history-expired fallback, the deadline helpers, the
+  internal-date→ISO conversion) plus 2 CLI tests (`mail auth`/`mail sync` without
+  credentials both print `NEED-MARCEL:` and exit 2, rather than crashing).
+- `bin/mail auth readonly` and `bin/mail sync` against the real `$LIFE_AGENT_CONF`
+  (currently empty) — both print the expected `NEED-MARCEL:` line and exit 2.
+- `google-api-python-client`, `google-auth-oauthlib`, and everything `gmail.py` imports
+  install and import cleanly on this host.
+
+**NEED-MARCEL (blocking the real run only, not the rest of the plan):**
+1. Google Cloud: enable the Gmail API, OAuth consent screen (External, scopes
+   `gmail.readonly` + `gmail.insert`, **Production** publishing status), OAuth client
+   (Desktop app) → `$LIFE_AGENT_CONF/google-client.json`, mode `0600`.
+2. `claude setup-token` as the owner → `$LIFE_AGENT_CONF/claude-oauth-token` (`0600`) —
+   needed for stage 6/7, not stage 3, but flagging once rather than per-stage.
+3. Once (1) exists: `mail auth readonly` and `mail auth insert` from a PC via
+   `ssh -L 8765:localhost:8765 <host>`.
+4. `mail.address` / `tag_since` are already set (kickoff); `owner_name` was added
+   during stage 1's leak-test fix.
+
+**Left for later:** `RealGmailPort` is unverified against a live mailbox — do that as
+soon as NEED-MARCEL item 3 lands (`mail sync --budget 60`), per the plan.
