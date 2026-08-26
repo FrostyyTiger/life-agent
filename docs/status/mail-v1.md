@@ -135,3 +135,16 @@ only need raw RFC 822 bytes, not a live Gmail connection).
 stage 3 will call `extract.build_message_fields()` per Gmail message and add the
 Gmail-only columns (`id`, `thread_id`, `history_id`, `internal_date`, `labels_json`,
 `size`, `is_from_owner`, `fetched_at`) before `store.upsert_message()`.
+
+**Babysitter fix folded in:** `search_fts` was passing the raw query straight to FTS5's
+`MATCH`, so punctuation the user typed as data (`foo-bar`, `invoice: hetzner`, a stray
+`"`) raised an FTS5 syntax error instead of searching for it. `search.py` now tokenizes
+the query and quotes each term as its own FTS5 string literal (escaping inner quotes by
+doubling them), joined with spaces — implicit AND — with a trailing `*` kept outside
+the quotes for prefix search. `sqlite3.OperationalError` from the `MATCH` is also caught
+and re-raised as `SearchError`, as a second line of defense. Four new tests
+(punctuation, a stray quote, terms-are-ANDed, prefix search); three existing tests that
+had been (ab)using FTS's `OR` operator to combine several fixtures into one query were
+rewritten — two against a small set of synthetic messages sharing a common word instead
+of the real fixtures, since AND-of-literal-terms means that trick no longer works, and
+real user queries were never going to look like `"word1 OR word2 OR word3"` anyway.

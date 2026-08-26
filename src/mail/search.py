@@ -5,9 +5,13 @@
 from __future__ import annotations
 
 import calendar
+import re
+import sqlite3
 from datetime import date, timedelta
 
 DEFAULT_LIMIT = 20
+
+_TOKEN_RE = re.compile(r"\S+")
 
 # Column order matches messages_fts's CREATE VIRTUAL TABLE: subject, from_addr, body_text.
 # Subject weighted well above the other two so a subject-line match outranks an
@@ -48,6 +52,29 @@ def _normalize_date(value: str, *, is_until: bool) -> str:
     return d.isoformat()
 
 
+def _quote_term(term: str) -> str:
+    """One user-typed word -> one safe FTS5 string literal.
+
+    Quoting every term (rather than passing the query straight to MATCH) is what
+    keeps punctuation the user typed as data — a hyphen, a colon, a stray quote —
+    from being parsed as FTS5 query syntax. A trailing `*` still means prefix search;
+    it survives outside the quotes, which FTS5's grammar allows after a quoted string.
+    """
+    is_prefix = term.endswith("*") and len(term) > 1
+    if is_prefix:
+        term = term[:-1]
+    quoted = '"' + term.replace('"', '""') + '"'
+    return quoted + "*" if is_prefix else quoted
+
+
+def _sanitize_query(raw: str) -> str:
+    """Free-text user input -> an FTS5 MATCH expression, terms implicitly ANDed."""
+    terms = _TOKEN_RE.findall(raw)
+    if not terms:
+        raise SearchError("empty search query")
+    return " ".join(_quote_term(term) for term in terms)
+
+
 def search_fts(
     conn,
     query: str,
@@ -63,7 +90,7 @@ def search_fts(
         "FROM messages_fts JOIN messages m ON m.rowid = messages_fts.rowid",
         "WHERE messages_fts MATCH ? AND m.deleted_at IS NULL",
     ]
-    params: list = [query]
+    params: list = [_sanitize_query(query)]
 
     if from_filter:
         sql.append("AND m.from_addr LIKE ?")
@@ -78,7 +105,10 @@ def search_fts(
     sql.append("ORDER BY rank LIMIT ?")
     params.append(limit)
 
-    rows = conn.execute(" ".join(sql), params).fetchall()
+    try:
+        rows = conn.execute(" ".join(sql), params).fetchall()
+    except sqlite3.OperationalError as exc:
+        raise SearchError(f"invalid search query: {exc}") from exc
     return [dict(row) for row in rows]
 
 
