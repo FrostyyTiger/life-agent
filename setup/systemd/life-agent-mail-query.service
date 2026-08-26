@@ -1,0 +1,47 @@
+[Unit]
+Description=life-agent: read-only mail query socket
+After=network.target
+
+# TEMPLATE — substitute __CODE_DIR__, __DATA_DIR__, __CONF_DIR__ and __STATE_DIR__
+# before installing. See setup/README.md.
+#
+# This is the owner's ONLY path into the archive once bootstrap locks mail.db down to
+# the life-agent user (docs/trust-model.md). Always on, not timer-triggered — the
+# socket file is created at startup and must persist for `mail search`/`show`/`status`
+# to fall back to it at any time of day.
+
+[Service]
+Type=simple
+User=life-agent
+Group=life-agent
+UMask=0007
+WorkingDirectory=__CODE_DIR__
+Environment=HOME=/var/lib/life-agent
+Environment=LIFE_AGENT_DATA=__DATA_DIR__
+Environment=LIFE_AGENT_CONF=__CONF_DIR__
+Environment=LIFE_AGENT_STATE=__STATE_DIR__
+Environment=PATH=/usr/bin:/bin:__CODE_DIR__/.venv/bin
+ExecStart=__CODE_DIR__/.venv/bin/python -m src.mail.cli serve
+Restart=on-failure
+RestartSec=10
+# /run/life-agent itself is created by bootstrap's tmpfiles.d entry, not here — this
+# unit only needs write access to place the socket file inside it.
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=__STATE_DIR__
+ReadWritePaths=/run/life-agent
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

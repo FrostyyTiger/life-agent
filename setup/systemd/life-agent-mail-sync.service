@@ -1,0 +1,43 @@
+[Unit]
+Description=life-agent: fetch new/changed mail from Gmail
+After=network-online.target
+Wants=network-online.target
+
+# TEMPLATE — substitute __OWNER__, __CODE_DIR__, __DATA_DIR__, __CONF_DIR__,
+# __STATE_DIR__ and __CLAUDE_BIN_DIR__ before installing. See setup/README.md.
+# This repo deliberately contains no path to a real installation.
+
+[Service]
+Type=oneshot
+User=life-agent
+Group=life-agent
+UMask=0077
+WorkingDirectory=__CODE_DIR__
+Environment=HOME=/var/lib/life-agent
+Environment=LIFE_AGENT_DATA=__DATA_DIR__
+Environment=LIFE_AGENT_CONF=__CONF_DIR__
+Environment=LIFE_AGENT_STATE=__STATE_DIR__
+Environment=PATH=/usr/bin:/bin:__CODE_DIR__/.venv/bin:__CLAUDE_BIN_DIR__
+ExecStart=__CODE_DIR__/.venv/bin/python -m src.mail.cli sync --budget 600
+
+# Defence in depth — the mail-specific state (mail.db, tokens) is what this run
+# actually depends on being locked down; these narrow the blast radius further.
+# MemoryDenyWriteExecute is deliberately OMITTED: it breaks CUDA (the embedding step
+# this same budget window may also drive via sync -> embed) on the mail-embed/mail-sync
+# path.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__STATE_DIR__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+TimeoutStartSec=15min

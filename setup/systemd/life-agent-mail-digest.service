@@ -1,0 +1,39 @@
+[Unit]
+Description=life-agent: compose the morning mail digest and insert it into the owner's inbox
+After=network-online.target
+Wants=network-online.target
+
+# TEMPLATE — substitute __OWNER__, __CODE_DIR__, __DATA_DIR__, __CONF_DIR__,
+# __STATE_DIR__ and __CLAUDE_BIN_DIR__ before installing. See setup/README.md.
+
+[Service]
+Type=oneshot
+User=life-agent
+Group=life-agent
+UMask=0077
+WorkingDirectory=__CODE_DIR__
+Environment=HOME=/var/lib/life-agent
+Environment=LIFE_AGENT_DATA=__DATA_DIR__
+Environment=LIFE_AGENT_CONF=__CONF_DIR__
+Environment=LIFE_AGENT_STATE=__STATE_DIR__
+Environment=PATH=/usr/bin:/bin:__CODE_DIR__/.venv/bin:__CLAUDE_BIN_DIR__
+ExecStart=__CODE_DIR__/.venv/bin/python -m src.mail.cli digest
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__STATE_DIR__ __DATA_DIR__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# The brief file must exist by 06:45 (dead-man's switch checks then, per
+# docs/failure-modes.md's mail-digest analogue) — fail fast rather than hang.
+TimeoutStartSec=10min

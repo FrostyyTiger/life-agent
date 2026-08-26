@@ -446,3 +446,69 @@ which doesn't exist as a directory yet on this host (bootstrap creates it via
 `tmpfiles.d`) — `mail serve` has only been run against an explicit `--socket` path so
 far. Group ownership (`life-agent`) is likewise a bootstrap/systemd-unit concern, not
 something `serve.py` sets itself beyond the `0660` mode.
+
+## Stage 8 — install: user, permissions, timers
+
+**Code complete, dry-run and `systemd-analyze verify` tested; application is
+NEED-MARCEL (needs `sudo`, which this session does not have).**
+
+- `setup/bootstrap.sh` extended, still dry-run by default. New steps beyond the
+  original three: `[1/6]` now creates `life-agent` **with a real home**
+  (`--home-dir /var/lib/life-agent --create-home`, changed from the original
+  `--no-create-home` — `claude -p` and the HF cache both need a writable `HOME`);
+  `[4/6]` creates `$LIFE_AGENT_STATE` (`0700`, `life-agent:life-agent`, **no group
+  bits** — unlike `threads/`/`briefs/`, the owner is deliberately not in this path,
+  per the mail-specific prohibition in the trust model this session is not authorized
+  to write into on its own — see stage 9); `[5/6]` installs
+  `/etc/tmpfiles.d/life-agent-mail.conf` for `/run/life-agent` (`0750`); `[6/6]` grants
+  `life-agent` traverse-only (`x`) ACLs on the owner's home and `$LIFE_AGENT_CONF` (so
+  it can reach the `claude` binary under the owner's nvm tree and the token files),
+  and — the actual isolation step — `chown`s the three mail token files to
+  `life-agent:life-agent` at `0600` if they exist, printing a `NEED-MARCEL` line for
+  each one that doesn't yet.
+- Four new unit files: `life-agent-mail-sync.{service,timer}` (`*:0/15`, `sync --budget
+  600`), `life-agent-mail-tag.{service,timer}` (`*:5/15`, `tag` — which already runs
+  feedback processing internally, so no separate `mail feedback` invocation is
+  needed), `life-agent-mail-digest.{service,timer}` (`06:30 Europe/Zurich`, `digest`),
+  and `life-agent-mail-query.service` (no timer — `Type=simple`, always on,
+  `Restart=on-failure`, `serve`). All `User=life-agent Group=life-agent`, hardened
+  identically to the original `life-agent-brief.service` template **minus**
+  `MemoryDenyWriteExecute` (breaks CUDA, needed for `sync`'s post-fetch embed step) and
+  **with** `ReadWritePaths` scoped to `$LIFE_AGENT_STATE` (+ `$LIFE_AGENT_DATA` for the
+  two units that write there: tag's feedback JSONL, digest's brief file) — the query
+  service additionally gets `ReadOnlyPaths=$LIFE_AGENT_STATE` (it only ever reads
+  `mail.db`) and `ReadWritePaths=/run/life-agent` for the socket file itself. New
+  placeholders `__STATE_DIR__` and `__CLAUDE_BIN_DIR__` added alongside the existing
+  four, documented in `setup/README.md`'s substitution loop.
+- `setup/deadman.sh` now checks `briefs/<today>-mail.md` instead of the original
+  `briefs/<today>.md` — the calendar-brief job it originally watched
+  (`life-agent-brief.timer` → `src/main.py`) was never implemented (`src/README.md`
+  still says so); mail-v1 is what actually runs on this host. Same script otherwise:
+  stats one file, no imports, no parsing, so nothing watches the watchdog either.
+- `setup/README.md` updated: the new units in the file table, the sed substitution
+  loop extended with the two new placeholders, and a new callout explaining that
+  mail's three tokens are **chowned** to `life-agent` (not ACL'd like the calendar
+  system's credentials) — the owner genuinely loses direct read access the moment
+  bootstrap runs, which is the isolation stage 9's trust-model update will state
+  formally.
+
+**Verified:**
+- `bash setup/bootstrap.sh` (dry run, real host env vars) — every step prints the
+  expected `would run: …` line in order, all six sections; the three
+  not-yet-present token files each print their own `NEED-MARCEL` line.
+- All four new unit files, plus the four pre-existing ones, substituted with real
+  values and checked with `systemd-analyze verify` — exits 0, no warnings.
+- `uv run pytest` — 169 passed, unaffected (this stage is infrastructure only, no
+  Python changed).
+
+**NEED-MARCEL — applying this stage requires the owner:**
+1. `sudo ./setup/bootstrap.sh --apply`
+2. Install the units (commands bootstrap prints, matching `setup/README.md`'s sed
+   loop) and `sudo systemctl enable --now` all seven timers/services.
+3. Then run every line in `setup/README.md`'s "Verify the boundaries" section — in
+   particular that `cat $LIFE_AGENT_STATE/mail.db` and
+   `cat $LIFE_AGENT_CONF/gmail-readonly-token.json` both fail for the owner, that
+   `life-agent-mail-query` is `active`, and that `mail status` run as the owner
+   answers via the socket rather than a direct read.
+4. Once (1)-(3) hold and NEED-MARCEL items 1-4 from earlier stages are done, watch
+   the journal for one full `sync → tag → digest` cycle and log the result here.

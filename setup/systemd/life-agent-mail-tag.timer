@@ -1,0 +1,10 @@
+[Unit]
+Description=life-agent: tag mail every 15 minutes, offset 5 min after sync
+
+[Timer]
+OnCalendar=*:5/15
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
