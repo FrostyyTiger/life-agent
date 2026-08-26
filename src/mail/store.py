@@ -140,9 +140,17 @@ CREATE TABLE pending (
 );
 """
 
+_SCHEMA_V2 = """
+-- Lets a digest note "you asked me to draft a reply to #n" exactly once, in the next
+-- digest, without re-deriving which item #n was (feedback.py doesn't keep that
+-- mapping past the reply that referenced it).
+ALTER TABLE feedback ADD COLUMN acknowledged_at TEXT;
+"""
+
 # (version, schema script) in order. Applied once each, tracked in schema_migrations.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _SCHEMA_V1),
+    (2, _SCHEMA_V2),
 ]
 
 _MESSAGE_COLUMNS = (
@@ -266,3 +274,81 @@ def get_recent_feedback(conn: sqlite3.Connection, limit: int) -> list[dict]:
         "SELECT * FROM feedback ORDER BY created_at DESC LIMIT ?", (limit,)
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def add_feedback(
+    conn: sqlite3.Connection, *, message_id: str, verdict: str, note: str | None,
+    source_msg_id: str, created_at: str,
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO feedback(message_id, verdict, note, source_msg_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (message_id, verdict, note, source_msg_id, created_at),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_unacknowledged_reply_feedback(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM feedback WHERE verdict = 'reply' AND acknowledged_at IS NULL"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def acknowledge_feedback(conn: sqlite3.Connection, feedback_ids: list[int], when: str) -> None:
+    if not feedback_ids:
+        return
+    conn.executemany(
+        "UPDATE feedback SET acknowledged_at = ? WHERE id = ?",
+        [(when, fid) for fid in feedback_ids],
+    )
+    conn.commit()
+
+
+def add_rule(
+    conn: sqlite3.Connection, *, kind: str, value: str, created_at: str, source: str
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO rules(kind, value, created_at, source) VALUES (?, ?, ?, ?)",
+        (kind, value, created_at, source),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_rule_values(conn: sqlite3.Connection, kind: str) -> set[str]:
+    rows = conn.execute("SELECT value FROM rules WHERE kind = ?", (kind,)).fetchall()
+    return {row["value"].lower() for row in rows}
+
+
+_DIGEST_COLUMNS = ("date", "message_id_hdr", "refs_json", "path", "inserted_gmail_id", "created_at")
+
+
+def upsert_digest(conn: sqlite3.Connection, digest: dict) -> None:
+    missing = [c for c in _DIGEST_COLUMNS if c not in digest]
+    if missing:
+        raise ValueError(f"upsert_digest: missing required field(s): {missing}")
+
+    columns = _DIGEST_COLUMNS
+    placeholders = ", ".join(f":{c}" for c in columns)
+    update_clause = ", ".join(f"{c}=excluded.{c}" for c in columns if c != "date")
+
+    conn.execute(
+        f"INSERT INTO digests ({', '.join(columns)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(date) DO UPDATE SET {update_clause}",
+        digest,
+    )
+    conn.commit()
+
+
+def get_digest(conn: sqlite3.Connection, date_str: str) -> dict | None:
+    row = conn.execute("SELECT * FROM digests WHERE date = ?", (date_str,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_latest_digest(conn: sqlite3.Connection) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM digests ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    return dict(row) if row else None

@@ -112,6 +112,29 @@ def test_vip_rule_floors_importance_after_model_call(conn, config, message_facto
     assert store.get_tag(conn, "m1")["importance"] == 2  # floored from 0
 
 
+def test_mute_rule_from_feedback_table_also_skips_the_model(conn, config, message_factory):
+    store.add_rule(conn, kind="mute", value="spam@example.com", created_at="2026-01-01T00:00:00Z",
+                    source="feedback")
+    store.upsert_message(conn, message_factory("m1", from_addr="spam@example.com"))
+
+    result = tag.tag(conn, config, conf_dir=Path("x"), state_dir=Path("y"),
+                      claude_runner=_fake_runner([]))
+    assert result.muted == 1
+
+
+def test_vip_rule_from_feedback_table_floors_importance(conn, config, message_factory):
+    store.add_rule(conn, kind="vip", value="important.example", created_at="2026-01-01T00:00:00Z",
+                    source="feedback")
+    store.upsert_message(conn, message_factory("m1", from_addr="ceo@important.example"))
+
+    runner = _fake_runner([{"tags": [
+        {"id": "m1", "category": "fyi", "importance": 0, "summary": "s", "action": None,
+         "deadline": None, "people": []},
+    ]}])
+    result = tag.tag(conn, config, conf_dir=Path("x"), state_dir=Path("y"), claude_runner=runner)
+    assert store.get_tag(conn, "m1")["importance"] == 2
+
+
 def test_successful_tagging_round_trip(conn, config, message_factory):
     store.upsert_message(conn, message_factory("m1", subject="Roof gutter quote"))
     runner = _fake_runner([{"tags": [

@@ -67,16 +67,34 @@ def _domain(addr: str) -> str:
     return addr.rsplit("@", 1)[-1].lower() if "@" in addr else ""
 
 
-def is_muted(config: MailConfig, message: dict) -> bool:
+def is_muted(conn, config: MailConfig, message: dict) -> bool:
+    """Static config.mute_senders plus anything the owner has since muted via a digest
+    reply (`mute <addr|domain>`, stored in `rules`). A rule value is matched as an
+    address if it contains "@", else as a domain.
+    """
     from_addr = (message["from_addr"] or "").lower()
-    return from_addr in {s.lower() for s in config.mute_senders}
+    domain = _domain(from_addr)
+    static = {s.lower() for s in config.mute_senders}
+    rule_values = store.get_rule_values(conn, "mute")
+    rule_addrs = {v for v in rule_values if "@" in v}
+    rule_domains = {v for v in rule_values if "@" not in v}
+    return from_addr in static or from_addr in rule_addrs or domain in rule_domains
 
 
-def is_vip(config: MailConfig, message: dict) -> bool:
+def is_vip(conn, config: MailConfig, message: dict) -> bool:
+    """Static config.vip_senders/vip_domains plus feedback-learned `vip` rules (same
+    address-or-domain matching as is_muted)."""
     from_addr = (message["from_addr"] or "").lower()
-    if from_addr in {s.lower() for s in config.vip_senders}:
-        return True
-    return _domain(from_addr) in {d.lower() for d in config.vip_domains}
+    domain = _domain(from_addr)
+    static_addrs = {s.lower() for s in config.vip_senders}
+    static_domains = {d.lower() for d in config.vip_domains}
+    rule_values = store.get_rule_values(conn, "vip")
+    rule_addrs = {v for v in rule_values if "@" in v}
+    rule_domains = {v for v in rule_values if "@" not in v}
+    return (
+        from_addr in static_addrs or from_addr in rule_addrs
+        or domain in static_domains or domain in rule_domains
+    )
 
 
 def select_messages_to_tag(conn, config: MailConfig, limit: int | None = None) -> list[dict]:
@@ -243,7 +261,7 @@ def tag(
     to_model = []
     muted = 0
     for message in messages:
-        if is_muted(config, message):
+        if is_muted(conn, config, message):
             store.upsert_tag(
                 conn,
                 {
@@ -297,7 +315,7 @@ def tag(
                 continue
 
             importance = result["importance"]
-            if is_vip(config, message):
+            if is_vip(conn, config, message):
                 importance = max(importance, 2)
 
             store.upsert_tag(

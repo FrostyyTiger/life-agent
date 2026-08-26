@@ -207,6 +207,22 @@ def build_service(credentials):
     return build("gmail", "v1", credentials=credentials, cache_discovery=False)
 
 
+def insert_raw_message(
+    service, raw_bytes: bytes, label_ids: tuple[str, ...] = ("INBOX", "UNREAD")
+) -> str:
+    """Inserts a message the archive composed itself (the digest) into the owner's own
+    inbox — never a message read from elsewhere. Requires the gmail.insert-scoped
+    service/token, distinct from the readonly one everything else uses.
+    """
+    import base64
+
+    encoded = base64.urlsafe_b64encode(raw_bytes).decode("ascii")
+    response = service.users().messages().insert(
+        userId="me", body={"raw": encoded, "labelIds": list(label_ids)}
+    ).execute(num_retries=NUM_RETRIES)
+    return response["id"]
+
+
 # ---------------------------------------------------------------------------
 # OAuth
 # ---------------------------------------------------------------------------

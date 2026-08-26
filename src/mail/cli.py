@@ -6,8 +6,11 @@ import argparse
 import json
 import sys
 import time
+from datetime import date
 
+from src.mail import digest as digest_mod
 from src.mail import embed as embed_mod
+from src.mail import feedback as feedback_mod
 from src.mail import gmail
 from src.mail import search as search_mod
 from src.mail import store
@@ -148,9 +151,68 @@ def cmd_tag(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
         result = tag_mod.tag(
             conn, config, conf_dir=env.conf_dir, state_dir=env.state_dir, limit=args.limit
         )
+        feedback_result = feedback_mod.process_feedback(conn, env.data_dir)
     finally:
         conn.close()
-    print(f"tag: tagged={result.tagged} muted={result.muted} failed={result.failed}")
+    print(
+        f"tag: tagged={result.tagged} muted={result.muted} failed={result.failed} "
+        f"feedback={feedback_result.feedback} rules={feedback_result.rules}"
+    )
+    return 0
+
+
+def cmd_feedback(env: Env, args: argparse.Namespace) -> int:
+    conn = store.connect(_db_path(env))
+    try:
+        result = feedback_mod.process_feedback(conn, env.data_dir)
+    finally:
+        conn.close()
+    print(f"feedback: feedback={result.feedback} rules={result.rules}")
+    return 0
+
+
+def _make_insert_fn(env: Env):
+    try:
+        credentials = gmail.load_credentials(env.conf_dir, gmail.INSERT_TOKEN_FILENAME)
+    except gmail.GmailAuthError as exc:
+        raise digest_mod.DigestError(str(exc)) from exc
+    service = gmail.build_service(credentials)
+    return lambda raw_bytes: gmail.insert_raw_message(service, raw_bytes)
+
+
+def cmd_digest(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
+    target_date = date.fromisoformat(args.date) if args.date else None
+
+    insert_fn = None
+    insert_setup_error = None
+    if not args.dry_run:
+        try:
+            insert_fn = _make_insert_fn(env)
+        except digest_mod.DigestError as exc:
+            insert_setup_error = str(exc)
+
+    conn = store.connect(_db_path(env))
+    try:
+        result = digest_mod.digest(
+            conn, config, env.data_dir, conf_dir=env.conf_dir, state_dir=env.state_dir,
+            target_date=target_date, dry_run=args.dry_run, insert_fn=insert_fn,
+        )
+    finally:
+        conn.close()
+
+    if result.skipped_existing:
+        print(f"digest: {result.path} already exists, not overwriting")
+        return 0
+
+    print(
+        f"digest: date={result.date} path={result.path} written={result.written} "
+        f"degraded={result.degraded} inserted={result.inserted}"
+    )
+    if insert_setup_error and not args.dry_run:
+        print(f"NEED-MARCEL: {insert_setup_error}", file=sys.stderr)
+    if result.insert_error:
+        print(f"digest: Gmail insert failed (file still written): {result.insert_error}",
+              file=sys.stderr)
     return 0
 
 
@@ -215,6 +277,14 @@ def build_parser() -> argparse.ArgumentParser:
     tag_parser = subparsers.add_parser("tag", help="tag new messages via claude -p")
     tag_parser.add_argument("--limit", type=int, default=None)
 
+    subparsers.add_parser(
+        "feedback", help="parse owner replies to digests into feedback/rules"
+    )
+
+    digest_parser = subparsers.add_parser("digest", help="compose and send the morning digest")
+    digest_parser.add_argument("--date", default=None, help="YYYY-MM-DD, defaults to today")
+    digest_parser.add_argument("--dry-run", action="store_true")
+
     return parser
 
 
@@ -243,6 +313,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_embed(env, args)
     if args.command == "tag":
         return cmd_tag(env, config, args)
+    if args.command == "feedback":
+        return cmd_feedback(env, args)
+    if args.command == "digest":
+        return cmd_digest(env, config, args)
 
     parser.error(f"unknown command: {args.command}")
     return 2

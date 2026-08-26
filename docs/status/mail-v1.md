@@ -335,3 +335,69 @@ would parse as tag/marker syntax never appear in untrusted text. Two new tests: 
 containing a forged `</mail><mail id="x">` still produces exactly one real opening and
 closing tag for the message; a body containing the literal `[truncated]` string never
 collides with the real marker.
+
+## Stage 7 — digest + feedback
+
+**Done** (code + fixture/fake-model tests; the real Gmail insert needs NEED-MARCEL
+item 1, `mail auth insert`).
+
+- `src/mail/digest.py`: numbering, the `#n -> message_id` map (`digests.refs_json`),
+  and every section except the two narrative ones are assembled by code, never by the
+  model — the model (Sonnet) only receives pre-bucketed, pre-numbered items and
+  returns one prose line per item, in the same order and count it was given. A
+  mismatched line count is treated as a model failure, same as a `ClaudeCliError`:
+  falls back to a mechanical line built straight from the tag's `summary`/`action`/
+  `deadline`, with a `_Degraded_` marker at the top of the file. If there are no
+  tagged messages at all since the last digest (or the last 24h with no prior digest),
+  falls back further to a flat "New mail" list of raw subjects — the file always gets
+  written either way.
+- Sections: **Needs you** (`category=needs-you` and `importance>=2`, capped at
+  `config.max_needs_you`), **Worth knowing** (`fyi`, capped at 15), **Receipts &
+  notifications** (listed, numbered), **Newsletters** / **Junk** (counts only, per the
+  plan — not numbered, so `refs_json` only ever maps to items actually shown).
+  Low-importance `needs-you` falls through to Junk rather than disappearing silently.
+- Gmail insert (`gmail.insert_raw_message`, new in `gmail.py`, uses the *insert*-scoped
+  token/service — distinct from the readonly one everything else uses): `From:
+  "life-agent" <config.address>`, `To: config.address` — both constants from code, the
+  model never produces a recipient; `Message-ID:
+  <digest-YYYYMMDD-{16 hex}@life-agent>`; `labelIds=[INBOX, UNREAD]`. A failed insert
+  does not fail the run — the brief file already exists by that point, which is what
+  the dead-man's switch actually checks (`failure-modes.md`'s "digest insert failing"
+  row) — it's logged to stderr and recorded as `insert_error` instead.
+- **Append-only in spirit**: `digest()` refuses to overwrite an existing
+  `briefs/YYYY-MM-DD-mail.md` — re-running for a date that already has a file is a
+  no-op (`skipped_existing`), not a silent rewrite.
+- `src/mail/feedback.py`: finds owner replies whose `In-Reply-To`/`References` names a
+  `digests.message_id_hdr` this archive actually sent, then parses `#n
+  junk|important|fyi|needs-you|receipt`, `vip <addr|domain>`, `mute <addr|domain>`,
+  `topic <words>`, and `reply #n: <text>` (stored only, v1 doesn't draft). Every parsed
+  item is written to the `feedback`/`rules` tables *and* appended to
+  `$LIFE_AGENT_DATA/mail-feedback.jsonl`. Runs at the end of every `mail tag` (also
+  callable standalone as `mail feedback`).
+- `tag.py`'s `is_muted`/`is_vip` now also consult the `rules` table (feedback-learned,
+  in addition to `config.yaml`'s static lists) — a `vip`/`mute` rule value is matched as
+  an address if it contains `@`, else as a domain.
+- A `reply #n: …` feedback item stays "unacknowledged" until the next digest mentions
+  it once ("Noted N reply request(s) … drafting isn't implemented yet (v2)") and marks
+  it acknowledged — a small schema migration (`feedback.acknowledged_at`, v2) backs
+  this.
+- `mail digest [--date D] [--dry-run]` and `mail feedback` wired into `cli.py`.
+
+**Verified:**
+- `uv run pytest` — 149 passed. New: 14 `digest.py` tests (bucketing, capping,
+  ref-numbering excludes count-only sections, the no-tags subjects-only fallback, model
+  failure and line-count-mismatch degradation, the pending-reply acknowledgment, file
+  writing + row recording, dry-run writes nothing, refusing to overwrite an existing
+  brief, insert success/failure paths, the constant-recipient email-building test); 15
+  `feedback.py` tests (every line format including case-insensitivity, an unknown `#n`
+  being dropped, multiple lines in one reply, non-owner/unrelated replies ignored,
+  storage + JSONL round trip); 4 CLI tests (`--dry-run` writes nothing, a normal run
+  writes the file and reports `NEED-MARCEL` for the missing insert token without
+  failing, `mail feedback` standalone).
+- `bin/mail digest --dry-run` and `bin/mail feedback` on the real host (empty archive,
+  no insert token yet) — both run cleanly against today's real date, exit 0, no crash.
+
+**NEED-MARCEL:** `mail auth insert` (item 1's OAuth client + item 3's auth flow, insert
+scope) is what's blocking a real Gmail insert — already flagged, still open. Once it
+exists, the next `mail digest` run on real tagged mail is the first true end-to-end
+check of stages 6+7 together.

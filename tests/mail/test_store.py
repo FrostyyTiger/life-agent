@@ -25,7 +25,7 @@ def test_connect_is_idempotent(tmp_path):
     conn2 = store.connect(db_path)
     applied = conn2.execute("SELECT version FROM schema_migrations").fetchall()
     conn2.close()
-    assert [row[0] for row in applied] == [1]
+    assert [row[0] for row in applied] == [v for v, _ in store.MIGRATIONS]
 
 
 def test_upsert_message_requires_all_columns(conn):

@@ -191,3 +191,42 @@ def test_tag_uses_fake_claude_binary(env_dirs, capsys, message_factory, fake_cla
     exit_code = cli.main(["tag"])
     assert exit_code == 0
     assert "tagged=1" in capsys.readouterr().out
+
+
+def test_digest_dry_run_does_not_write_a_file(env_dirs, capsys, message_factory):
+    from datetime import datetime, timezone
+
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    store.upsert_message(conn, message_factory(
+        "m1", subject="hi", fetched_at=datetime.now(timezone.utc).isoformat()
+    ))
+    conn.close()
+
+    exit_code = cli.main(["digest", "--dry-run", "--date", "2026-08-15"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "written=False" in out
+    assert not (env_dirs["data"] / "briefs" / "2026-08-15-mail.md").exists()
+
+
+def test_digest_writes_file_without_insert_token(env_dirs, capsys, message_factory):
+    from datetime import datetime, timezone
+
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    store.upsert_message(conn, message_factory(
+        "m1", subject="hi", fetched_at=datetime.now(timezone.utc).isoformat()
+    ))
+    conn.close()
+
+    exit_code = cli.main(["digest", "--date", "2026-08-15"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "written=True" in captured.out
+    assert (env_dirs["data"] / "briefs" / "2026-08-15-mail.md").exists()
+    assert "NEED-MARCEL" in captured.err
+
+
+def test_feedback_command_runs_standalone(env_dirs, capsys):
+    exit_code = cli.main(["feedback"])
+    assert exit_code == 0
+    assert "feedback=0 rules=0" in capsys.readouterr().out
