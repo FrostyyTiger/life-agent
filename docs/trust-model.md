@@ -12,11 +12,12 @@ Three things this design takes seriously, in descending order of likelihood:
 1. **The agent is wrong.** Far and away the most probable failure. It misreads a calendar
    entry, invents a deadline, marks a live thread dead, or deletes context you wrote. No
    malice required. Most of the boundaries below exist for this case.
-2. **The agent is manipulated.** From v1.5 the agent reads text written by strangers. An
-   email containing *"ignore your previous instructions and…"* is the standard attack on any
-   mail-reading agent and should be assumed to arrive eventually. v1 has no such surface,
-   which is deliberate: the boundaries get built and exercised before the attacker-controlled
-   input shows up.
+2. **The agent is manipulated.** Mail-v1 (`docs/plans/mail-v1.md`) is the first surface
+   where the agent reads text written by strangers. An email containing *"ignore your
+   previous instructions and…"* is the standard attack on any mail-reading agent and is
+   assumed to arrive eventually — `examples/mail/008-prompt-injection.eml` exists
+   specifically to keep this case exercised in CI, not left hypothetical. See
+   ["Mail: prompt injection"](#mail-prompt-injection) below for what actually bounds it.
 3. **The host is compromised by other means.** Out of scope. If someone has root on the
    machine, none of this helps.
 
@@ -29,7 +30,7 @@ sent to a frontier API by design and that trust is accepted openly — see
 | Principal | Unix identity | Purpose |
 | --- | --- | --- |
 | **You** | your own login account | Own the machine. No restrictions. |
-| **Agent** | `life-agent` | Runs the brief job. Unprivileged, no `sudo`, no login shell. |
+| **Agent** | `life-agent` | Runs the brief job **and** every mail-v1 job (sync, tag, digest, the query socket). Unprivileged, no `sudo`, no login shell, has a home directory only because `claude -p` and the HF cache need one. |
 | **Publisher** | your account, via timer | Pushes the data repo to its private remote. |
 
 The publisher is a separate principal from the agent on purpose. The agent commits — that
@@ -49,6 +50,10 @@ machine belongs to a principal that does not read untrusted input.
 | Append briefs | `$LIFE_AGENT_DATA/briefs/` | Filesystem: `0770`, plus convention (append-only) |
 | Commit to data repo | `$LIFE_AGENT_DATA` local git only | No credential exists for any remote |
 | Call the model API | One HTTPS endpoint | Convention + API key perms |
+| Read mail (readonly) | One Gmail account, `gmail.readonly` OAuth scope | Google OAuth scope + token file, `0600`, owned by `life-agent` |
+| Insert one mail into the owner's own inbox | `gmail.insert` scope — this scope *cannot send*; recipient is a constant in `digest.py`, never model output | Google OAuth scope + token file, `0600`, owned by `life-agent` |
+| Call `claude -p` with no tools | A long-lived subscription token (`claude setup-token`); tagging (haiku) and digest composition (sonnet) only | Convention (`--bare --tools ""`) + token file, `0600`, owned by `life-agent` |
+| Answer archive queries over a socket | `/run/life-agent/mail.sock` — `/status`, `/search`, `/show`, all read-only, no endpoint can list the whole archive, `limit` capped at 50 | Convention (`serve.py`'s fixed endpoint set) — see the honest note below |
 
 ### The agent may not
 
@@ -63,6 +68,16 @@ machine belongs to a principal that does not read untrusted input.
 | Delete thread files | Wrong inferences should be cheap, not destructive | **Convention only** — see below |
 | Rewrite your body text in a thread | Your notes are yours | **Convention only** — see below |
 | Edit past briefs | A record you can rewrite is not a record | **Convention only** — see below |
+| Send mail, or write to any mailbox but your own | `gmail.insert` cannot send; the recipient of the one message it does write is a constant, never model output | **Kernel** — the OAuth scope itself has no send capability |
+| Read the mail archive or any mail token, if you are the owner (and therefore any other Claude Code session on this host) | Isolation is the entire point of mail-v1 — see "Why this shape" in `docs/plans/mail-v1.md` | **Kernel** — `$LIFE_AGENT_STATE` `0700` owned by `life-agent`, no group bits; the three mail tokens `0600` owned by `life-agent`. Verify: `namei -l $LIFE_AGENT_STATE/mail.db` shows no access for you past the state directory, and `cat $LIFE_AGENT_STATE/mail.db` / `cat $LIFE_AGENT_CONF/gmail-readonly-token.json` both fail as you |
+
+**An honest note on that last row's boundary**: the query socket at
+`/run/life-agent/mail.sock` (mode `0660`, group `life-agent`) *is* reachable by any
+process running as you — that is the intended interface, not a leak. What it returns is
+capped search/show results through `serve.py`'s three fixed endpoints, never the
+database file itself, never a token, and never an unbounded dump (no endpoint can list
+the whole archive). Calling it is an explicit, visible act in a session transcript;
+opening `mail.db` directly is not possible without `sudo`, which is the deliberate line.
 
 ### Honest accounting of the soft boundaries
 
@@ -84,6 +99,44 @@ thread-writing behind a narrow tool the agent calls — one that validates field
 permissions — rather than to write a sterner prompt. That migration is deliberately deferred
 until there is evidence it is needed, and it is the most likely first change in v1.5.
 
+## Mail: prompt injection
+
+Mail-v1's tagging and digest models are the first place this project puts a model in
+contact with text an attacker chose, not text the owner wrote. In descending order of how
+much weight each control actually carries:
+
+- **No tools, ever.** Every mail-path model call runs as `claude -p --bare --tools ""`. It
+  cannot call a tool, browse, or write a file, no matter what the mail says. This is the
+  single strongest control here and the reason everything below is defense in depth
+  rather than the whole story.
+- **Schema-validated output, checked twice.** Every reply is checked against a fixed shape
+  (`category` enum, `importance` 0-3, capped string lengths, an ISO-or-null `deadline`)
+  by `tag.py`/`digest.py` themselves, independently of whatever `--json-schema` enforces
+  on the model-provider side. A model that complies with an injected instruction can
+  still only produce a valid tag or a valid digest line — no field an attacker's text
+  can steer exists outside that shape.
+- **Untrusted content is labelled and boundary-sanitized.** `prompts/tag.md` tells the
+  model every `<mail id="…">` block is data, not instructions. The literal substrings a
+  model would read as block syntax (`<mail`, `</mail>`, and the code's own `[truncated]`
+  marker) are neutralized in subject/from/body before rendering, so a message cannot
+  forge the end of its own block and open a fake one impersonating a different id.
+- **The worst case is a wrong tag or a misleading one-line summary.** Not a sent email,
+  not a deleted message, not a credential, not a tool call — none of those are reachable
+  from this path regardless of what the model decides to do with an injected instruction.
+- **Feedback is scoped to a conversation the archive itself started.** `mail feedback`
+  only parses replies whose `In-Reply-To`/`References` names a `Message-ID` this archive
+  generated and sent to the owner's own address. A stranger's mail cannot inject a
+  feedback command by forging those headers into looking like a reply to something that
+  was never sent.
+- **v2 drafting (not built) inherits the existing send gate above**: it will require an
+  explicit owner instruction to turn on, and will only ever write a draft to a directory
+  for the owner to send — never an autonomous send.
+
+This section exists because the README promised it the moment email ingestion was still
+a future milestone. That promise is why these boundaries were built and exercised
+(`examples/mail/008-prompt-injection.eml`, the block-boundary-forging tests in
+`tests/mail/test_tag.py`) before any attacker-controlled input actually arrived, not after.
+
 ## Boundary between the repositories
 
 ```
@@ -91,6 +144,11 @@ life-agent/          you: rw    agent: r-x    ← code and prompts; agent cannot
 life-agent-data/     you: rw    agent: rw     ← scoped per directory, see schema/thread.md
 life-agent-notes/    you: rw    agent: ---    ← design thinking; agent has no business here
 ~/.config/life-agent you: rw    agent: r--    ← credentials, 0600/0640, never in any repo
+                                                 (mail's three tokens are the exception —
+                                                  agent: rw, you: --- once bootstrap chowns them)
+$LIFE_AGENT_STATE     you: ---   agent: rw     ← not a repo at all: mail.db + HF cache,
+                                                 0700, no group bits — you reach it only
+                                                 via the query socket (see Capabilities)
 ```
 
 Credentials live outside every repository because git history is permanent. A token committed

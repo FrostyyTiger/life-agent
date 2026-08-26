@@ -270,6 +270,8 @@ def cmd_sync(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
     start = time.monotonic()
     conn = store.connect(_db_path(env))
     try:
+        if args.full:
+            gmail.reset_sync_state(conn)
         result = gmail.sync(conn, port, config, budget_seconds=args.budget)
 
         embed_budget = None
@@ -318,6 +320,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser("sync", help="fetch new/changed mail from Gmail")
     sync_parser.add_argument("--budget", type=float, default=None, help="seconds")
+    sync_parser.add_argument("--full", action="store_true",
+                              help="reset sync state and re-run a full backfill/rebuild")
 
     embed_parser = subparsers.add_parser("embed", help="embed messages that have no chunks yet")
     embed_parser.add_argument("--budget", type=float, default=None, help="seconds")

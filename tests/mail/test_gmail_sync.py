@@ -161,3 +161,28 @@ def test_internal_date_to_iso_round_trip():
     dt = datetime(2026, 8, 15, 9, 0, tzinfo=timezone.utc)
     iso = gmail._internal_date_to_iso(int(dt.timestamp() * 1000))
     assert iso.startswith("2026-08-15T09:00:00")
+
+
+def test_reset_sync_state_forces_a_fresh_full_backfill(conn, config):
+    port = FakeGmailPort()
+    _seed_default_mailbox(port)
+    gmail.sync(conn, port, config)
+    assert gmail.get_sync_state(conn, "backfill_complete") == "1"
+
+    gmail.reset_sync_state(conn)
+    assert gmail.get_sync_state(conn, "backfill_complete") is None
+    assert gmail.get_sync_state(conn, "history_id") is None
+    assert conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 0
+
+    result = gmail.sync(conn, port, config)
+    assert result.mode == "backfill"
+    assert result.done is True
+    # existing messages are re-verified via upsert, not duplicated
+    assert store.count_messages(conn) == 3
+
+
+def test_reset_sync_state_clears_stale_pending_rows(conn, config):
+    conn.execute("INSERT INTO pending(id, added_at) VALUES ('stale', datetime('now'))")
+    gmail.set_sync_state(conn, "history_id", "5")
+    gmail.reset_sync_state(conn)
+    assert conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 0

@@ -315,6 +315,19 @@ def set_sync_state(conn, key: str, value: str) -> None:
     conn.commit()
 
 
+def reset_sync_state(conn) -> None:
+    """`mail sync --full`: forces the next sync() call to redo full discovery from
+    scratch. Existing messages are untouched — upsert_message is idempotent, so
+    re-discovering and re-fetching everything just re-verifies/refreshes what's
+    already there rather than duplicating it. Clears any stale partial-backfill
+    `pending` rows too, so a previous interrupted run's leftovers don't mix with the
+    fresh discovery.
+    """
+    conn.execute("DELETE FROM sync_state WHERE key IN ('history_id', 'backfill_complete')")
+    conn.execute("DELETE FROM pending")
+    conn.commit()
+
+
 def _queue_ids(conn, ids) -> None:
     now = _now_iso()
     for message_id in ids:

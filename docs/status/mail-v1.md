@@ -578,3 +578,124 @@ Re-verified after all six fixes:
   fixes above.
 - `uv run pytest` — 175 passed (up from 169: the WAL read-only test, the jsonl
   write-failure-tolerance test, and four `git_commit_data_repo`/wiring tests).
+
+## Stage 9 — documentation + handoff
+
+**Done.**
+
+- **`docs/trust-model.md`**: the agent's capability table gains Gmail readonly, Gmail
+  insert (recipient constant in code, scope cannot send), the `claude -p` subscription
+  token, and the query socket; a new prohibition row states plainly that the owner's
+  account — and therefore every other Claude Code session on this host — cannot read
+  the mail archive or any mail token, with the exact `namei -l` / `cat` commands to
+  verify it. A new **"Mail: prompt injection"** section (the one the README promised
+  before a line of mail code existed) walks through what actually bounds the blast
+  radius, in order of how much weight each control carries: no tools ever, output
+  schema-validated independently of provider enforcement, untrusted content
+  boundary-sanitized, worst case is a wrong tag/summary, feedback scoped to a
+  conversation the archive itself started. Also states honestly that the query socket
+  *is* reachable by any owner-side process — that's the interface, not a leak — and
+  returns capped search results, never the store. The threat model's old "v1 has no
+  such surface" line (written when mail was still hypothetical) is updated to point
+  here instead of contradicting the code that now exists.
+- **`docs/egress.md`**: five new ledger rows (Gmail reads; the one-time `BAAI/bge-m3`
+  download; tagging — headers + truncated body of *new* mail only; digest — tag
+  summaries, not raw bodies again; Gmail insert to the owner's own address only) plus a
+  new "Rows 5-9 — mail-v1" section applying row 1's existing reasoning to mail rather
+  than inventing new principles. States explicitly that the archive itself
+  (`mail.db`, embeddings, chunk text) never leaves the host and isn't part of either
+  git repo — it lives in `$LIFE_AGENT_STATE`, outside every repository. The stale
+  "Email, in v1 | Deferred to v1.5" row in "What is deliberately absent" is corrected —
+  email isn't deferred anymore, mail-v1 is what actually shipped.
+- **`docs/failure-modes.md`**: row 12 (prompt injection) replaced — no longer "out of
+  scope," now points at the trust-model section that actually bounds it. Six new rows
+  (13-18): both Gmail tokens expiring, history-expired fallback (not really a failure —
+  logged as `incremental-fallback`, handled automatically), the HF model download
+  failing, GPU unavailable (CPU fallback), `claude -p` rate-limited/down (tag retries,
+  digest degrades), and the digest's Gmail insert failing (the brief file already
+  exists by that point, so the dead-man's switch is unaffected). A short "Mail digest,
+  same principle" paragraph extends the existing degraded-brief philosophy to the
+  digest's own degraded mode (mechanical lines, then bare subjects, in that order,
+  before giving up). "What is not defended against" no longer lists prompt injection as
+  an open gap — it's answered, not just acknowledged, so the entry there now describes
+  what specifically stays undetectable (a model complying with an injected instruction)
+  versus what's actually bounded (the consequence of it doing so).
+- **`README.md`**: status section rewritten to state plainly that mail-v1 shipped
+  *before* the base calendar v1 it was originally scoped as half of — an unusual
+  order, said outright rather than smoothed over. Architecture table gains
+  `$LIFE_AGENT_STATE` and notes mail's tokens are agent-*owned*, not merely
+  agent-readable like the calendar credentials. Roadmap and documentation table both
+  updated.
+- **`src/README.md`**: gained a "src/mail/ (implemented)" section — the module table
+  from this status doc's stage summaries, condensed — clearly separated from the
+  original "Planned modules (calendar v1 — not yet implemented)" section so a reader
+  can't mistake one for the other. Tests section extended to describe `tests/mail/`'s
+  fake-Gmail/fake-`claude`-binary approach alongside the existing fixture description.
+- **Gap found and fixed while writing this section**: the runbook below promises
+  `mail sync --full` to rebuild the archive, a flag that didn't exist until now.
+  Added `gmail.reset_sync_state()` (clears `sync_state`'s `history_id`/
+  `backfill_complete` and any stale `pending` rows) and wired `--full` into `mail
+  sync`; existing messages aren't duplicated (`upsert_message` is idempotent — a full
+  rebuild re-verifies/refreshes what's there rather than doubling it). 4 new tests.
+
+**Verified:**
+- `uv run pytest` — 179 passed (four new: `reset_sync_state` forces a fresh backfill
+  without duplicating messages, it clears stale `pending` rows, and two CLI tests
+  confirming `--full` does/doesn't call it).
+- `bin/mail sync --full` on the real host (no token yet) — parses correctly, reaches
+  the same `NEED-MARCEL` missing-token path as plain `mail sync`.
+- Full repo grep for the real owner address/name — clean, as after every prior stage.
+
+### The owner's runbook
+
+Everything below assumes stage 8 has been applied (`sudo ./setup/bootstrap.sh --apply`
++ units installed + NEED-MARCEL credentials in place). All commands run as you unless
+marked `sudo -u life-agent`.
+
+**Check it's alive:**
+```
+systemctl list-timers 'life-agent-mail-*'      # sync/tag/digest, all recently fired
+systemctl is-active life-agent-mail-query      # active
+mail status                                     # via the query socket
+journalctl -u life-agent-mail-sync -u life-agent-mail-tag -u life-agent-mail-digest --since today
+```
+
+**Re-authenticate a Gmail token** (readonly or insert, whichever expired — see failure
+13): from a PC, `ssh -L 8765:localhost:8765 <host>`, then on the host
+`mail auth readonly` or `mail auth insert`; open the printed URL on the PC. Bootstrap's
+chown (or the printed manual command) hands the new token file back to `life-agent`.
+
+**Rebuild the archive from scratch** (a suspected gap, a schema question, or just
+wanting a clean re-verify): `sudo -u life-agent mail sync --full` — re-discovers every
+message id and re-fetches each one; existing rows are refreshed in place, not
+duplicated. Follow with `sudo -u life-agent mail embed` and `sudo -u life-agent mail
+tag` to catch up the derived data (embeddings/tags aren't cleared by `--full`, so this
+is optional unless you specifically want them redone too — clear the `chunks`/`tags`
+tables first if so, via `sudo -u life-agent sqlite3 $LIFE_AGENT_STATE/mail.db`).
+
+**Read the journal for one of the three mail jobs:**
+```
+journalctl -u life-agent-mail-sync -f      # or -tag, or -digest
+```
+
+**Search or inspect the archive** (from your own account — no `sudo` needed):
+```
+mail search "roof gutter" --mode hybrid
+mail show <id>
+```
+
+**If the query socket is down**: `systemctl status life-agent-mail-query`;
+`journalctl -u life-agent-mail-query`. `mail status`/`search`/`show` will report
+`unavailable` rather than crash if both the direct read and the socket fail.
+
+**What's still open, in order of what unblocks the most:**
+1. NEED-MARCEL items from stages 3/6/7/8 (Google Cloud OAuth client, `claude
+   setup-token`, the three token files, `sudo bootstrap --apply`) — nothing runs for
+   real until these land.
+2. Once they do: the real-host checks the plan calls for at each stage (`mail sync
+   --budget 60`, a real `mail tag --limit 5`, a real GPU `mail embed` run logging
+   chunks/sec, a real `mail digest` insert) — none of these have been exercised
+   against a live mailbox yet, only against fixtures and fakes.
+3. Stage 10 (optional): `mail mcp`, a thin stdio wrapper over the query socket so any
+   Claude Code session on the host can opt into searching mail — deferred until 1-9
+   are green, per the plan.

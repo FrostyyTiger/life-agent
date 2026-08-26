@@ -14,11 +14,24 @@ repository less believable, so the accounting is stated plainly.
 | 1 | Thread titles, bodies, dates; today's calendar entries; the brief prompt | Anthropic API | Daily, ~07:00 | Scheduled brief job | **Yes — personal.** Names, commitments, appointments, whatever you wrote in thread bodies. |
 | 2 | Full contents of `threads/` and `briefs/` | GitHub (private repo) | Daily, after the brief | Publisher timer | **Yes — personal.** The complete record. |
 | 3 | Calendar API request | Google | Daily, ~07:00 | Scheduled brief job | Read-only query against one calendar id. Google already has this data. |
-| 4 | A fixed string: *"No brief for YYYY-MM-DD"* | ntfy.sh | Only on failure | Dead-man's switch at 08:00 | **No personal data.** A date and the fact that a file is missing. |
+| 4 | A fixed string: *"No brief for YYYY-MM-DD"* (now checks the mail digest — see [mail-v1](plans/mail-v1.md) stage 8) | ntfy.sh | Only on failure | Dead-man's switch at 08:00 | **No personal data.** A date and the fact that a file is missing. |
+| 5 | Gmail API reads | Google | Every 15 min | mail-sync timer | Read-only (`gmail.readonly`) query against your own inbox. Google already has this data. |
+| 6 | `BAAI/bge-m3` model weights | Hugging Face | Once (first `mail embed` run) | mail-sync/embed | **No personal data.** A public model's weights, not your data. |
+| 7 | Headers + truncated body of *new* mail only | Anthropic API | Every 15 min | mail-tag timer | **Yes — personal.** Whatever's in the mail, truncated to `config.mail.body_chars_for_model`. |
+| 8 | Tagged-mail summaries (not raw bodies) | Anthropic API | Daily, 06:30 | mail-digest timer | **Yes — personal**, but already-summarized by row 7's pass, not the raw mail again. |
+| 9 | The composed digest | Google (`gmail.insert`, to your own inbox) | Daily, 06:30 | mail-digest timer | **Yes — personal**, but it's a summary of your own mail being written back to your own mailbox — the scope cannot send it, or write, anywhere else. |
 
 Nothing else leaves. Specifically: no telemetry, no analytics, no crash reporting, no
 third-party dependencies that phone home, and the agent holds no credential for any
-destination other than row 1's endpoint.
+destination other than rows 1, 5-9's endpoints (calendar brief and mail-v1
+respectively — two separate credential sets, held by the same `life-agent` identity).
+
+The mail **archive itself** (`mail.db`, embeddings, chunk text) never leaves the host and
+is not part of either git repo — it lives in `$LIFE_AGENT_STATE`, outside every
+repository, exactly like credentials live outside every repository (see
+`trust-model.md`'s boundary diagram). Only what rows 5-9 describe ever crosses the
+machine boundary; a search or `show` over the query socket answers locally and sends
+nothing anywhere.
 
 ## Row 1 — the model API
 
@@ -91,13 +104,43 @@ entire value is being simpler than the system it watches; a self-hosted notifica
 would remove even that bit at the cost of the watchdog depending on more infrastructure, which
 is the wrong trade for this component specifically.
 
+## Rows 5-9 — mail-v1
+
+Same trade as row 1, paid twice over: mail content, not just calendar/thread content,
+now transits a frontier API. What's done about it mirrors row 1's approach rather than
+inventing a new one:
+
+- **Only new mail is sent, not the whole archive.** Row 7 (tagging) sees each mail once,
+  truncated; row 8 (digest) sees already-produced tag summaries, never raw bodies a
+  second time. A search over the query socket (`serve.py`) never calls a model at all
+  in `--mode fts`, and even `--mode vec`/`hybrid` only ever computes a local embedding —
+  nothing about a search query leaves the host.
+- **The model in this path has no tools and cannot act** — see
+  `trust-model.md`'s "Mail: prompt injection" section for the full accounting. This
+  matters for egress specifically because it means the worst case of row 7/8 going wrong
+  is a wrong tag or summary, not a new, attacker-directed egress path.
+- **Row 9 can only ever write to one place**: the owner's own inbox. The `gmail.insert`
+  scope has no send capability at all, and the recipient is a constant in `digest.py`,
+  never model output — there is no way for row 9 to become "send this summary somewhere
+  else."
+- Both mail-specific credentials (Gmail, the `claude -p` subscription token) are held by
+  `life-agent`, not the owner's account — a manipulated *owner-side* session (every other
+  Claude Code session on this host) has no route to any of rows 5-9's endpoints, the
+  same separation-of-principals argument row 2 makes for the publisher.
+
+**What would change this:** same answer as row 1 — a local model good enough for
+tagging/digest judgement removes rows 7-8. Row 5 (Gmail read), row 6 (one-time model
+download), and row 9 (insert) are comparatively low-stakes and would likely remain even
+then.
+
 ## What is deliberately absent
 
 | Not present | Why |
 | --- | --- |
-| Email, in v1 | Deferred to v1.5. It is the largest work item and the only source of attacker-controlled text. |
-| Any send capability | The agent drafts; you send. Not a setting — simply not built. |
-| A hosted dashboard | The brief is a markdown file. A phone-readable view can render from the private repo without another egress path. |
+| Automatic thread detection from mail | The other half of the original v1.5 milestone — mail-v1 shipped the archive/digest half first; see `docs/plans/mail-v1.md`. Needs v1's thread store, which doesn't exist yet. |
+| Any send capability | The agent drafts or inserts to your own inbox; it never sends. Not a setting — simply not built. |
+| Attachment downloads | Mail-v1 records filename/mimetype/size only, never content. A stated non-goal, not a gap. |
+| A hosted dashboard | The brief and the mail digest are both markdown files. A phone-readable view can render from the private repo without another egress path. |
 | Analytics of any kind | There is one user. |
 
 ## Maintenance

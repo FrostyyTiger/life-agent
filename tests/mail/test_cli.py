@@ -130,6 +130,52 @@ def test_sync_without_token_prints_need_marcel(env_dirs, capsys):
     assert "mail auth" in err
 
 
+def test_sync_full_flag_resets_sync_state_first(env_dirs, capsys, monkeypatch):
+    from src.mail import gmail
+    from tests.mail.fake_embedder import FakeEmbedder
+
+    monkeypatch.setattr(cli, "_build_embedder", lambda env: FakeEmbedder())
+    monkeypatch.setattr(gmail, "load_credentials", lambda conf_dir, filename: object())
+    monkeypatch.setattr(gmail, "build_service", lambda credentials: object())
+    monkeypatch.setattr(gmail, "RealGmailPort", lambda service: object())
+
+    calls = []
+    monkeypatch.setattr(gmail, "reset_sync_state", lambda conn: calls.append("reset"))
+    monkeypatch.setattr(
+        gmail, "sync",
+        lambda conn, port, config, budget_seconds=None: gmail.SyncResult(
+            fetched=0, mode="backfill", done=True
+        ),
+    )
+
+    exit_code = cli.main(["sync", "--full"])
+    assert exit_code == 0
+    assert calls == ["reset"]
+
+
+def test_sync_without_full_flag_does_not_reset(env_dirs, capsys, monkeypatch):
+    from src.mail import gmail
+    from tests.mail.fake_embedder import FakeEmbedder
+
+    monkeypatch.setattr(cli, "_build_embedder", lambda env: FakeEmbedder())
+    monkeypatch.setattr(gmail, "load_credentials", lambda conf_dir, filename: object())
+    monkeypatch.setattr(gmail, "build_service", lambda credentials: object())
+    monkeypatch.setattr(gmail, "RealGmailPort", lambda service: object())
+
+    calls = []
+    monkeypatch.setattr(gmail, "reset_sync_state", lambda conn: calls.append("reset"))
+    monkeypatch.setattr(
+        gmail, "sync",
+        lambda conn, port, config, budget_seconds=None: gmail.SyncResult(
+            fetched=0, mode="incremental", done=True
+        ),
+    )
+
+    exit_code = cli.main(["sync"])
+    assert exit_code == 0
+    assert calls == []
+
+
 def test_embed_processes_pending_messages(env_dirs, capsys, message_factory, monkeypatch):
     from tests.mail.fake_embedder import FakeEmbedder
 

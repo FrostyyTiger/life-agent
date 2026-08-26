@@ -1,13 +1,47 @@
 # src/
 
-**Not yet implemented.** This directory currently describes the modules rather than containing
-them. The design is settled (see [`../docs/architecture.md`](../docs/architecture.md)); the
-code is not written.
+This directory holds two things at very different stages. `src/mail/` (below) is real,
+tested code — see [`../docs/status/mail-v1.md`](../docs/status/mail-v1.md). Everything
+else in this file describes the original calendar-brief system, which remains **not yet
+implemented**: the design is settled (see
+[`../docs/architecture.md`](../docs/architecture.md)), but no code exists for it, and
+this section still just describes the modules rather than containing them.
 
 Recording it this way rather than committing stubs is deliberate — an empty function that
 returns `None` looks like progress and is worse than an honest gap.
 
-## Planned modules
+## src/mail/ (implemented)
+
+The mail archive, tagging, and morning digest — see
+[`../docs/plans/mail-v1.md`](../docs/plans/mail-v1.md) for the design and
+[`../docs/status/mail-v1.md`](../docs/status/mail-v1.md) for what's verified and what
+remains (owner credentials + a `sudo` bootstrap run). Invoked as `bin/mail <command>`,
+which wraps `uv run python -m src.mail.cli`.
+
+| Module | Responsibility | Network? |
+| --- | --- | --- |
+| `cli.py` | Argument parsing/dispatch; falls back to the query socket when `mail.db` isn't directly readable | no (dispatches to modules that do) |
+| `config.py` | `LIFE_AGENT_*` env vars + `config.yaml` loading. No defaults, refuses to start if unset. | no |
+| `store.py` | SQLite schema, migrations, all CRUD (messages, tags, feedback, rules, digests) | no |
+| `gmail.py` | OAuth (readonly + insert), sync (backfill, incremental, history-expired fallback) | yes |
+| `extract.py` | Raw RFC 822 bytes → header/body fields; HTML→text | no |
+| `embed.py` | Chunking + `BAAI/bge-m3` embeddings (GPU, CPU fallback) | yes (one-time model download) |
+| `search.py` | FTS5 (`bm25()`), sqlite-vec KNN, and reciprocal-rank-fusion hybrid search | no |
+| `claude_cli.py` | `claude -p --bare --tools ""` subprocess wrapper for tagging/digest | yes (via the subprocess) |
+| `tag.py` | Mute/VIP rules, prompt construction (with block-boundary sanitization), schema validation | no (calls `claude_cli`) |
+| `digest.py` | Section bucketing, numbering, prose composition, Gmail insert, git commit | yes (via `claude_cli` + Gmail insert) |
+| `feedback.py` | Parses owner replies to digests into `feedback`/`rules` | no |
+| `serve.py` | The read-only query socket (`/status`, `/search`, `/show`) | no |
+| `socket_client.py` | Owner-side client for the above | no (local Unix socket only) |
+
+Constraints this package actually honours, verified by its own test suite
+(`tests/mail/`): no tools and no session persistence for any mail-path model call;
+every tag/digest reply schema-validated independently of the provider's own
+enforcement; untrusted mail content never used to identify block boundaries in a
+prompt; feedback accepted only from replies to a `Message-ID` the archive itself
+generated. See `docs/trust-model.md`'s "Mail: prompt injection" section.
+
+## Planned modules (calendar v1 — not yet implemented)
 
 | Module | Responsibility | Network? |
 | --- | --- | --- |
@@ -41,6 +75,13 @@ returns `None` looks like progress and is worse than an honest gap.
 
 The public repo's fixtures in [`../examples/threads/`](../examples/threads/) are a synthetic
 life covering all four failure modes plus one proposed thread. CI must run the brief generator
-against them with the model call stubbed. Without that, the public skeleton quietly becomes
-something that only works on the author's machine against the author's data, and nobody finds
-out until a stranger clones it.
+against them with the model call stubbed, once that generator exists. Without that, the
+public skeleton quietly becomes something that only works on the author's machine against
+the author's data, and nobody finds out until a stranger clones it.
+
+`tests/mail/` follows the same principle for the mail package, and already does this today:
+[`../examples/mail/`](../examples/mail/) is a 12-message synthetic mailbox (including a
+prompt-injection attempt and a digest-reply carrying feedback commands) that every stage's
+tests run against — Gmail and `claude -p` are both faked (`tests/mail/fake_gmail.py`, a real
+executable on `PATH` for `claude_cli.py`) rather than mocked at the Python boundary, so the
+actual subprocess/API contracts get exercised, not just the business logic around them.
