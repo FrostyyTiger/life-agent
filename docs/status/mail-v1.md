@@ -401,3 +401,48 @@ item 1, `mail auth insert`).
 scope) is what's blocking a real Gmail insert — already flagged, still open. Once it
 exists, the next `mail digest` run on real tagged mail is the first true end-to-end
 check of stages 6+7 together.
+
+## Stage 7b — query socket
+
+**Done.**
+
+- `src/mail/serve.py`: `MailQueryServer` — stdlib `http.server.BaseHTTPRequestHandler`
+  over a `socketserver.UnixStreamServer`, no framework. Three GET-only endpoints:
+  `/status`, `/search?q=&mode=&from=&since=&until=&limit=`, `/show?id=`. Every
+  non-GET method (POST/PUT/DELETE/PATCH/HEAD) gets a 405; an unknown path gets a 404;
+  `/search` and `/show` both require a query param (`q`/`id`) — there is no way to ask
+  either endpoint for "everything," and `limit` is silently capped at 50 server-side
+  regardless of what's requested. Opens the db `mode=ro`; loads `sqlite-vec` so
+  `--mode vec/hybrid` works over the socket too (the embedder for that is built lazily,
+  once, and cached on the server instance — not reloaded per request). Removes and
+  recreates the socket file on startup (a stale one from an unclean shutdown would
+  otherwise block binding), and chmods it `0660`.
+- `src/mail/socket_client.py`: a plain-stdlib HTTP-over-Unix-socket client (raw
+  request/response parsing — no `http.client` UDS support, no extra dependency for a
+  handful of GET requests). `request()` returns `(status, payload)` without raising;
+  `get()` wraps it and raises `SocketQueryError` on 4xx/5xx, which is what `cli.py`
+  actually uses.
+- `cli.py`: `mail serve [--socket PATH]`, and `mail status`/`search`/`show` now try
+  `store.connect()` first and fall back to querying the socket on
+  `sqlite3.OperationalError` — the same three commands work for both principals, per
+  the plan, with no separate "socket mode" flag for the owner to remember.
+
+**Verified:**
+- `uv run pytest` — 169 passed. New: 16 `serve.py` tests (socket mode is `0660`, each
+  endpoint's happy path, missing-param errors, unknown id is 404, unknown path is 404,
+  every non-GET method parametrized and refused, limit silently capped, no endpoint can
+  list the whole archive); 4 CLI fallback tests. The fallback tests needed a specific
+  trick: a single test process can't reproduce "unreadable to the owner, readable to
+  `life-agent`" with `chmod` alone, since both principals are the same OS user in this
+  environment — so the tests run a *real* `MailQueryServer` against a fully-readable
+  db (exactly like production, where the server genuinely can read it) while only
+  `cli.py`'s own `store.connect` call is forced to raise, simulating the CLI's view of
+  a locked-down db without touching what the server can see.
+- `bin/mail serve --socket <tmp>` on the real host, queried via `socket_client.get` from
+  a separate process — `/status` returns `{"messages": 0}` correctly.
+
+**Left for stage 8:** the socket currently defaults to `/run/life-agent/mail.sock`,
+which doesn't exist as a directory yet on this host (bootstrap creates it via
+`tmpfiles.d`) — `mail serve` has only been run against an explicit `--socket` path so
+far. Group ownership (`life-agent`) is likewise a bootstrap/systemd-unit concern, not
+something `serve.py` sets itself beyond the `0660` mode.

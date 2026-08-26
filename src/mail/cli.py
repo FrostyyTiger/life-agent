@@ -4,18 +4,27 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
 from datetime import date
+from pathlib import Path
 
 from src.mail import digest as digest_mod
 from src.mail import embed as embed_mod
 from src.mail import feedback as feedback_mod
 from src.mail import gmail
 from src.mail import search as search_mod
+from src.mail import serve as serve_mod
+from src.mail import socket_client
 from src.mail import store
 from src.mail import tag as tag_mod
 from src.mail.config import ConfigError, Env, MailConfig, load_config, load_env
+
+# The owner's only path into the archive once bootstrap (stage 8) locks mail.db down
+# to the life-agent user — see docs/trust-model.md. A fixed, generic system path, not
+# host-specific, so it's fine as a constant in the public repo.
+SOCKET_PATH = Path("/run/life-agent/mail.sock")
 
 
 def _db_path(env: Env):
@@ -32,16 +41,21 @@ def _build_embedder(env: Env):
 
 def cmd_status(env: Env, config: MailConfig) -> int:
     db_path = _db_path(env)
-    existed_before = db_path.exists()
-    conn = store.connect(db_path)
     try:
-        count = store.count_messages(conn)
-    finally:
-        conn.close()
-
-    count_str = str(count)
-    if not existed_before:
-        count_str += " (database just created — run `mail sync`)"
+        existed_before = db_path.exists()
+        conn = store.connect(db_path)
+        try:
+            count = store.count_messages(conn)
+        finally:
+            conn.close()
+        count_str = str(count)
+        if not existed_before:
+            count_str += " (database just created — run `mail sync`)"
+    except sqlite3.OperationalError:
+        try:
+            count_str = f"{socket_client.get(SOCKET_PATH, '/status')['messages']} (via socket)"
+        except socket_client.SocketQueryError as exc:
+            count_str = f"unavailable — {exc}"
 
     lines = [
         "mail status",
@@ -62,10 +76,21 @@ def _render_hit(row: dict) -> str:
 
 
 def cmd_search(env: Env, args: argparse.Namespace) -> int:
-    embedder = _build_embedder(env) if args.mode in ("vec", "hybrid") else None
-
-    conn = store.connect(_db_path(env))
     try:
+        db_path = _db_path(env)
+        conn = store.connect(db_path)
+    except sqlite3.OperationalError:
+        try:
+            payload = socket_client.get(SOCKET_PATH, "/search", {
+                "q": args.query, "mode": args.mode, "from": args.from_,
+                "since": args.since, "until": args.until, "limit": args.limit,
+            })
+        except socket_client.SocketQueryError as exc:
+            print(f"mail: {exc}", file=sys.stderr)
+            return 2
+        hits = payload["hits"]
+    else:
+        embedder = _build_embedder(env) if args.mode in ("vec", "hybrid") else None
         try:
             hits = search_mod.search(
                 conn,
@@ -80,8 +105,8 @@ def cmd_search(env: Env, args: argparse.Namespace) -> int:
         except search_mod.SearchError as exc:
             print(f"mail: {exc}", file=sys.stderr)
             return 2
-    finally:
-        conn.close()
+        finally:
+            conn.close()
 
     if args.json:
         print(json.dumps(hits, indent=2))
@@ -94,11 +119,19 @@ def cmd_search(env: Env, args: argparse.Namespace) -> int:
 
 
 def cmd_show(env: Env, args: argparse.Namespace) -> int:
-    conn = store.connect(_db_path(env))
     try:
-        row = store.get_message(conn, args.id)
-    finally:
-        conn.close()
+        conn = store.connect(_db_path(env))
+    except sqlite3.OperationalError:
+        try:
+            row = socket_client.get(SOCKET_PATH, "/show", {"id": args.id})["message"]
+        except socket_client.SocketQueryError as exc:
+            print(f"mail: {exc}", file=sys.stderr)
+            return 1
+    else:
+        try:
+            row = store.get_message(conn, args.id)
+        finally:
+            conn.close()
 
     if row is None:
         print(f"mail: no message with id {args.id!r}", file=sys.stderr)
@@ -246,6 +279,13 @@ def cmd_sync(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(env: Env, args: argparse.Namespace) -> int:
+    socket_path = Path(args.socket) if args.socket else SOCKET_PATH
+    print(f"serve: listening on {socket_path}")
+    serve_mod.serve(socket_path, _db_path(env), env.state_dir)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mail")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -285,6 +325,9 @@ def build_parser() -> argparse.ArgumentParser:
     digest_parser.add_argument("--date", default=None, help="YYYY-MM-DD, defaults to today")
     digest_parser.add_argument("--dry-run", action="store_true")
 
+    serve_parser = subparsers.add_parser("serve", help="run the read-only query socket")
+    serve_parser.add_argument("--socket", default=None, help=f"default: {SOCKET_PATH}")
+
     return parser
 
 
@@ -317,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_feedback(env, args)
     if args.command == "digest":
         return cmd_digest(env, config, args)
+    if args.command == "serve":
+        return cmd_serve(env, args)
 
     parser.error(f"unknown command: {args.command}")
     return 2

@@ -230,3 +230,106 @@ def test_feedback_command_runs_standalone(env_dirs, capsys):
     exit_code = cli.main(["feedback"])
     assert exit_code == 0
     assert "feedback=0 rules=0" in capsys.readouterr().out
+
+
+# --- socket fallback: mail status/search/show when mail.db isn't directly readable ---
+#
+# In production, the state dir is locked to the life-agent user (0700, no group bits) —
+# a different OS principal than the owner running these commands. A single-user test
+# process can't reproduce "unreadable to me, readable to that other user" with chmod
+# alone, so instead: the real db is fully accessible, a real serve.MailQueryServer
+# reads it directly (bypassing store.connect entirely, exactly like production), and
+# only cli.py's own store.connect call is forced to fail — simulating the CLI's view
+# of a locked-down db without touching what the server can see.
+
+
+class _RunningSocketServer:
+    def __init__(self, env_dirs):
+        import threading
+
+        from src.mail import serve
+
+        self.socket_path = env_dirs["state"].parent / "mail.sock"
+        self.server = serve.MailQueryServer(
+            self.socket_path, env_dirs["state"] / "mail.db", env_dirs["state"]
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+
+def _populate_db(env_dirs, message_factory):
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    store.upsert_message(conn, message_factory("m1", subject="Roof gutter quote",
+                                                from_addr="hartmann@example.com"))
+    conn.close()
+
+
+def _simulate_cli_cannot_open_db(monkeypatch):
+    import sqlite3
+
+    def _raise(*a, **kw):
+        raise sqlite3.OperationalError("simulated: unable to open database file")
+
+    monkeypatch.setattr(store, "connect", _raise)
+
+
+def test_status_falls_back_to_socket_when_db_unreadable(env_dirs, message_factory, capsys,
+                                                          monkeypatch):
+    _populate_db(env_dirs, message_factory)
+    server = _RunningSocketServer(env_dirs)
+    monkeypatch.setattr(cli, "SOCKET_PATH", server.socket_path)
+    _simulate_cli_cannot_open_db(monkeypatch)
+    try:
+        exit_code = cli.main(["status"])
+    finally:
+        server.stop()
+
+    assert exit_code == 0
+    assert "messages:         1 (via socket)" in capsys.readouterr().out
+
+
+def test_search_falls_back_to_socket_when_db_unreadable(env_dirs, message_factory, capsys,
+                                                          monkeypatch):
+    _populate_db(env_dirs, message_factory)
+    server = _RunningSocketServer(env_dirs)
+    monkeypatch.setattr(cli, "SOCKET_PATH", server.socket_path)
+    _simulate_cli_cannot_open_db(monkeypatch)
+    try:
+        exit_code = cli.main(["search", "gutter"])
+    finally:
+        server.stop()
+
+    assert exit_code == 0
+    assert "m1" in capsys.readouterr().out
+
+
+def test_show_falls_back_to_socket_when_db_unreadable(env_dirs, message_factory, capsys,
+                                                        monkeypatch):
+    _populate_db(env_dirs, message_factory)
+    server = _RunningSocketServer(env_dirs)
+    monkeypatch.setattr(cli, "SOCKET_PATH", server.socket_path)
+    _simulate_cli_cannot_open_db(monkeypatch)
+    try:
+        exit_code = cli.main(["show", "m1"])
+    finally:
+        server.stop()
+
+    assert exit_code == 0
+    assert "Roof gutter quote" in capsys.readouterr().out
+
+
+def test_status_reports_unavailable_when_neither_local_nor_socket_work(env_dirs, message_factory,
+                                                                        capsys, monkeypatch):
+    _populate_db(env_dirs, message_factory)
+    monkeypatch.setattr(cli, "SOCKET_PATH", env_dirs["state"] / "no-such.sock")
+    _simulate_cli_cannot_open_db(monkeypatch)
+
+    exit_code = cli.main(["status"])
+
+    assert exit_code == 0
+    assert "unavailable" in capsys.readouterr().out
