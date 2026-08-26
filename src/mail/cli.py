@@ -14,6 +14,7 @@ from src.mail import digest as digest_mod
 from src.mail import embed as embed_mod
 from src.mail import feedback as feedback_mod
 from src.mail import gmail
+from src.mail import mail_mcp
 from src.mail import search as search_mod
 from src.mail import serve as serve_mod
 from src.mail import socket_client
@@ -296,6 +297,13 @@ def cmd_serve(env: Env, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mcp(args: argparse.Namespace) -> int:
+    socket_path = Path(args.socket) if args.socket else SOCKET_PATH
+    server = mail_mcp.build_server(socket_path)
+    server.run(transport="stdio")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mail")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -340,6 +348,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser("serve", help="run the read-only query socket")
     serve_parser.add_argument("--socket", default=None, help=f"default: {SOCKET_PATH}")
 
+    mcp_parser = subparsers.add_parser(
+        "mcp", help="run a stdio MCP server exposing search/show/status over the socket"
+    )
+    mcp_parser.add_argument("--socket", default=None, help=f"default: {SOCKET_PATH}")
+
     return parser
 
 
@@ -374,6 +387,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_digest(env, config, args)
     if args.command == "serve":
         return cmd_serve(env, args)
+    if args.command == "mcp":
+        return cmd_mcp(args)
 
     parser.error(f"unknown command: {args.command}")
     return 2

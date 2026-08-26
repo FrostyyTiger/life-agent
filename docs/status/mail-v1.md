@@ -696,6 +696,61 @@ mail show <id>
    --budget 60`, a real `mail tag --limit 5`, a real GPU `mail embed` run logging
    chunks/sec, a real `mail digest` insert) — none of these have been exercised
    against a live mailbox yet, only against fixtures and fakes.
-3. Stage 10 (optional): `mail mcp`, a thin stdio wrapper over the query socket so any
-   Claude Code session on the host can opt into searching mail — deferred until 1-9
-   are green, per the plan.
+
+## Stage 10 — MCP server
+
+**Done.** Optional per the plan ("only if 1-9 are green"); built now that they are.
+
+- `src/mail/mail_mcp.py`: `build_server(socket_path)` returns an `MCPServer` (the
+  official `mcp` SDK, added as a dependency — this is the one place in the mail
+  package that reaches for a library instead of hand-rolling the wire protocol, unlike
+  `serve.py`'s deliberately-framework-free HTTP-over-Unix-socket server; MCP's actual
+  JSON-RPC/capability-negotiation protocol is enough surface that reimplementing it
+  would be the wrong kind of "no dependencies") exposing exactly three tools —
+  `search`, `show`, `status` — each a direct pass-through to `socket_client.get()`
+  against the same read-only socket `serve.py` answers and the owner-side CLI falls
+  back to. No new capability exists here that the socket didn't already expose; this
+  is purely a second, MCP-shaped way to reach it.
+  - `mcp>=2.1.1`'s API renamed `FastMCP` to `MCPServer` from the version most
+    tutorials still describe (`mcp.server.mcpserver.MCPServer`, not
+    `mcp.server.fastmcp.FastMCP`) — noted here since it's an easy version trap.
+  - Errors (an unknown message id, an empty query) come back as ordinary tool
+    output (`{"error": "..."}`), not a raised/crashing tool call — a "not found" is a
+    normal result for a model to see and react to, not an exceptional condition.
+  - The `mcp` package (pydantic, starlette, uvicorn, ...) is imported lazily inside
+    `build_server()`, not at module load — every other `mail` subcommand stays free
+    of that import weight, same reasoning as `embed.py`/`gmail.py` lazy-importing
+    torch/the Google client libraries.
+- `mail mcp [--socket PATH]` wired into `cli.py`.
+- **Registration** (owner-only, done by hand — this isn't something `bootstrap.sh`
+  should write, since `~/.claude.json` is the owner's own session config, not part of
+  the install this project owns):
+  ```json
+  {
+    "mcpServers": {
+      "life-agent-mail": {
+        "command": "/absolute/path/to/life-agent/bin/mail",
+        "args": ["mcp"]
+      }
+    }
+  }
+  ```
+  In the **owner's own** `~/.claude.json` only — never a project's `.claude/settings.json`
+  or `.mcp.json` — so registration is a host-wide, explicit opt-in a session chooses,
+  not something that follows you into an unrelated repo just because you cloned it on
+  this machine.
+
+**Verified:**
+- `uv run pytest` — 189 passed. New: 8 `mail_mcp.py` tests against a real running
+  `MailQueryServer` (exactly the three tools exposed and no others, `status`,
+  `search` with and without a `sender` filter, `limit`, `show`, an unknown id
+  reported as data rather than a crash); 2 CLI tests confirming `--socket` and the
+  default path both reach `build_server()` correctly, with `server.run()` stubbed out
+  so the test doesn't block on stdio.
+- `bin/mail mcp --socket <tmp>` on the real host with stdin closed immediately —
+  starts, initializes the server, exits 0 on EOF, no traceback.
+
+**Left for real verification:** registering it in this host's actual
+`~/.claude.json` and confirming a *different* Claude Code session can call `search`/
+`show`/`status` through it — not done here, since that's a change to the owner's own
+session config, not something this executor should apply unprompted.

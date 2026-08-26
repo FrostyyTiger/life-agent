@@ -143,9 +143,11 @@ a future milestone. That promise is why these boundaries were built and exercise
 life-agent/          you: rw    agent: r-x    ← code and prompts; agent cannot write
 life-agent-data/     you: rw    agent: rw     ← scoped per directory, see schema/thread.md
 life-agent-notes/    you: rw    agent: ---    ← design thinking; agent has no business here
-~/.config/life-agent you: rw    agent: r--    ← credentials, 0600/0640, never in any repo
-                                                 (mail's three tokens are the exception —
-                                                  agent: rw, you: --- once bootstrap chowns them)
+~/.config/life-agent you: rw    agent: r--    ← google-client.json: owner-owned, agent
+                                                 reads it via ACL, never in any repo
+                     you: ---   agent: rw     ← the three mail tokens: owned by
+                                                 life-agent once bootstrap chowns them —
+                                                 you lose direct read access to these
 $LIFE_AGENT_STATE     you: ---   agent: rw     ← not a repo at all: mail.db + HF cache,
                                                  0700, no group bits — you reach it only
                                                  via the query socket (see Capabilities)

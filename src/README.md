@@ -33,6 +33,7 @@ which wraps `uv run python -m src.mail.cli`.
 | `feedback.py` | Parses owner replies to digests into `feedback`/`rules` | no |
 | `serve.py` | The read-only query socket (`/status`, `/search`, `/show`) | no |
 | `socket_client.py` | Owner-side client for the above | no (local Unix socket only) |
+| `mail_mcp.py` | Stdio MCP server exposing the socket's three endpoints as tools (optional, stage 10) | no (talks to the socket, not the network) |
 
 Constraints this package actually honours, verified by its own test suite
 (`tests/mail/`): no tools and no session persistence for any mail-path model call;

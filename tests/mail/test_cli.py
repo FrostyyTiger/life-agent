@@ -278,6 +278,47 @@ def test_feedback_command_runs_standalone(env_dirs, capsys):
     assert "feedback=0 rules=0" in capsys.readouterr().out
 
 
+def test_mcp_command_builds_server_for_the_given_socket(env_dirs, monkeypatch):
+    from pathlib import Path
+
+    calls = {}
+
+    class FakeServer:
+        def run(self, transport):
+            calls["transport"] = transport
+
+    def fake_build_server(socket_path):
+        calls["socket_path"] = socket_path
+        return FakeServer()
+
+    monkeypatch.setattr(cli.mail_mcp, "build_server", fake_build_server)
+
+    exit_code = cli.main(["mcp", "--socket", "/tmp/custom.sock"])
+
+    assert exit_code == 0
+    assert calls["socket_path"] == Path("/tmp/custom.sock")
+    assert calls["transport"] == "stdio"
+
+
+def test_mcp_command_uses_default_socket_without_flag(env_dirs, monkeypatch):
+    calls = {}
+
+    class FakeServer:
+        def run(self, transport):
+            calls["transport"] = transport
+
+    def fake_build_server(socket_path):
+        calls["socket_path"] = socket_path
+        return FakeServer()
+
+    monkeypatch.setattr(cli.mail_mcp, "build_server", fake_build_server)
+
+    exit_code = cli.main(["mcp"])
+
+    assert exit_code == 0
+    assert calls["socket_path"] == cli.SOCKET_PATH
+
+
 # --- socket fallback: mail status/search/show when mail.db isn't directly readable ---
 #
 # In production, the state dir is locked to the life-agent user (0700, no group bits) —

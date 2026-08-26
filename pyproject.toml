@@ -12,6 +12,7 @@ dependencies = [
     "sentence-transformers>=3.0",
     "torch>=2.4",
     "numpy>=1.26",
+    "mcp>=2.1.1",
 ]
 
 [dependency-groups]
