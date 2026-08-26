@@ -1,0 +1,28 @@
+Message-ID: <003-multipart-attachment@fixtures.example>
+Subject: Signed lease copy attached
+From: Hausverwaltung Meier <verwaltung@meier-immobilien.example>
+To: owner@example.com
+Date: Sat, 15 Aug 2026 11:00:00 +0200
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============5187931840343112105=="
+
+--===============5187931840343112105==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Guten Tag geschätzter Kunde,
+
+anbei die unterschriebene Kopie des Mietvertrags.
+
+Mit freundlichen Gruessen
+Hausverwaltung Meier
+
+--===============5187931840343112105==
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="mietvertrag.pdf"
+MIME-Version: 1.0
+
+JVBERi0xLjQgZmFrZSBwZGYgY29udGVudCBmb3IgZml4dHVyZSBwdXJwb3Nlcwo=
+
+--===============5187931840343112105==--

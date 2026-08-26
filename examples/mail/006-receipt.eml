@@ -1,0 +1,17 @@
+Message-ID: <006-receipt@fixtures.example>
+Subject: Your receipt from Bergbahn AG
+From: Bergbahn AG <noreply@bergbahn.example>
+To: owner@example.com
+Date: Sat, 15 Aug 2026 14:00:00 +0200
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+Thank you for your purchase.
+
+Item: Day pass, adult
+Amount: CHF 68.00
+Date: 14 August 2026
+Order #: BB-88213
+
+This is an automated receipt, no reply necessary.

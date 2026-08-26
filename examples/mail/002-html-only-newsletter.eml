@@ -1,0 +1,34 @@
+Message-ID: <002-html-newsletter@fixtures.example>
+Subject: This Week in Embedded Systems =?utf-8?b?4oCU?= Issue 214
+From: Embedded Weekly <news@embeddedweekly.example>
+To: owner@example.com
+Date: Sat, 15 Aug 2026 10:00:00 +0200
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="===============2550202178024311060=="
+
+--===============2550202178024311060==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+This is an HTML-only email. View it in an HTML-capable client.
+
+--===============2550202178024311060==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+<html><body>
+<h1>Embedded Weekly =E2=80=94 Issue 214</h1>
+<p>Top stories this week:</p>
+<ul>
+<li><a href=3D"https://example.com/a">A new RTOS scheduler benchmark</a></li>
+<li><a href=3D"https://example.com/b">Reaction wheel control loops on Cortex-=
+M</a></li>
+</ul>
+<p><small><a href=3D"https://embeddedweekly.example/unsubscribe?u=3D123">Unsu=
+bscribe</a></small></p>
+<img src=3D"https://track.example.com/pixel.gif" width=3D"1" height=3D"1">
+</body></html>
+
+--===============2550202178024311060==--

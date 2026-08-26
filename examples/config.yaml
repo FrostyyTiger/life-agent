@@ -30,3 +30,20 @@ publish:
   remote: origin
   branch: main
   secret_scan: true    # pre-push gitleaks. Do not disable.
+
+# Mail archive + digest (mail-v1, see docs/plans/mail-v1.md). Owned by you, read-only
+# to the mail jobs, which run as a separate `life-agent` system user — see
+# docs/trust-model.md for why the archive is isolated from everything else here.
+mail:
+  address: you@example.com
+  owner_name: null         # optional; not sent to any model. Purely local (e.g. a leak
+                            # test can check the repo never contains your real name)
+  tag_since: 2026-01-01   # mail older than this is archived+searchable but never sent to a model
+  digest_time: "06:30"
+  timezone: Europe/Zurich
+  vip_senders: []          # exact addresses; importance floor 2, skips the model for junk/mute
+  vip_domains: []
+  mute_senders: []         # tagged junk without a model call
+  topics: []               # free-text hints folded into the tagging prompt
+  max_needs_you: 5         # hard cap on the digest's "Needs you" section
+  body_chars_for_model: 4000

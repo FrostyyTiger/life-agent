@@ -1,0 +1,12 @@
+Message-ID: <012-minimal@fixtures.example>
+Subject: ok
+From: Jonas Keller <jonas.keller@example.com>
+To: owner@example.com
+Cc: Team List <team@example.com>
+Date: Sat, 15 Aug 2026 20:00:00 +0200
+Reply-To: jonas.keller+replies@example.com
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+ok, thanks

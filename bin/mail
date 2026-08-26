@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Wrapper so `mail` can be invoked from anywhere; resolves to the repo root so
+# `python -m src.mail.cli` finds the `src` package regardless of caller's cwd.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+exec uv run python -m src.mail.cli "$@"

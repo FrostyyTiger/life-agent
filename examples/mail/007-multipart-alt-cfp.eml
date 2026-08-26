@@ -1,0 +1,26 @@
+Message-ID: <007-multipart-alt@fixtures.example>
+Subject: Conference CFP reminder: SmallSat Summit
+From: SmallSat Summit <cfp@smallsatsummit.example>
+To: owner@example.com
+Date: Sat, 15 Aug 2026 15:00:00 +0200
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="===============2848468970263567405=="
+
+--===============2848468970263567405==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+Reminder: the call for papers closes in two weeks. Submit your abstract at ht=
+tps://smallsatsummit.example/submit
+
+--===============2848468970263567405==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+<html><body><p>Reminder: the call for papers closes in two weeks. <a href=3D"=
+https://smallsatsummit.example/submit">Submit your abstract</a>.</p></body></=
+html>
+
+--===============2848468970263567405==--

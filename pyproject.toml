@@ -1,0 +1,32 @@
+[project]
+name = "life-agent-mail"
+version = "0.1.0"
+description = "Mail ingestion, tagging and digest for life-agent (see docs/plans/mail-v1.md)"
+requires-python = ">=3.12"
+dependencies = [
+    "google-api-python-client>=2.140",
+    "google-auth-oauthlib>=1.2",
+    "pyyaml>=6.0",
+    "beautifulsoup4>=4.12",
+    "sqlite-vec>=0.1.6",
+    "sentence-transformers>=3.0",
+    "torch>=2.4",
+    "numpy>=1.26",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+# This project is a CLI application, not a library: nothing outside it ever does
+# `import mail`. `uv sync` should only resolve and install dependencies into
+# .venv, never try to build/install src/mail as a package.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+# `src.mail...` imports (matching `python -m src.mail.cli`) need the repo root on
+# sys.path; pytest's own entry point doesn't add cwd the way `python -m` does.
+pythonpath = ["."]
+testpaths = ["tests"]
