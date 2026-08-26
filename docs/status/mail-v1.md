@@ -322,3 +322,16 @@ soon as NEED-MARCEL item 3 lands (`mail sync --budget 60`), per the plan.
 
 **NEED-MARCEL:** item 2 (`claude setup-token` → `$LIFE_AGENT_CONF/claude-oauth-token`)
 is what's blocking a real tagging run — flagged in stage 3's section, still open.
+
+**Babysitter fix folded in:** `_render_mail_block` interpolated subject/from/body
+verbatim, so a mail whose body contained a literal `</mail><mail id="…">` could forge
+the end of its own block and open a fake one — e.g. impersonating a different message
+id right next to fabricated instructions that would read as real framing to the model.
+Same issue for the literal string `[truncated]`, which could impersonate the marker the
+code itself appends on truncation. Both are now neutralized (case-insensitive, in
+subject/from/body only — never in the code-controlled id or date) by swapping the
+ASCII brackets for fullwidth lookalikes before rendering, so the substrings a model
+would parse as tag/marker syntax never appear in untrusted text. Two new tests: a body
+containing a forged `</mail><mail id="x">` still produces exactly one real opening and
+closing tag for the message; a body containing the literal `[truncated]` string never
+collides with the real marker.

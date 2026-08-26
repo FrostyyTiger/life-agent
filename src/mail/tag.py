@@ -10,6 +10,7 @@ model is untrusted data, not instructions.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from pathlib import Path
@@ -99,16 +100,36 @@ def select_messages_to_tag(conn, config: MailConfig, limit: int | None = None) -
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
+# A mail can contain a literal "<mail id=...>" / "</mail>" (or our own truncation
+# marker) in its subject/from/body, all of which are untrusted, attacker-controlled
+# text. Left alone, that would let a message fake the end of its own block and open a
+# forged one — e.g. impersonating a different id with fabricated instructions right
+# next to the real framing. Neutralize the exact substrings the model would otherwise
+# read as block boundaries, in whatever untrusted field they appear.
+_MAIL_TAG_RE = re.compile(r"</?mail\b", re.IGNORECASE)
+_TRUNCATION_MARKER_RE = re.compile(re.escape("[truncated]"), re.IGNORECASE)
+
+
+def _sanitize_untrusted(text: str) -> str:
+    text = _MAIL_TAG_RE.sub(lambda m: m.group(0).replace("<", "＜"), text)
+    text = _TRUNCATION_MARKER_RE.sub("［truncated］", text)
+    return text
+
+
 def _render_mail_block(message: dict, body_chars_for_model: int) -> str:
-    body = message.get("body_text") or ""
+    subject = _sanitize_untrusted(message["subject"] or "")
+    from_name = _sanitize_untrusted(message["from_name"] or "")
+    from_addr = _sanitize_untrusted(message["from_addr"] or "")
+    body = _sanitize_untrusted(message.get("body_text") or "")
+
     truncated = len(body) > body_chars_for_model
     if truncated:
         body = body[:body_chars_for_model] + BODY_TRUNCATION_SUFFIX
 
     return (
         f'<mail id="{message["id"]}">\n'
-        f"Subject: {message['subject']}\n"
-        f"From: {message['from_name']} <{message['from_addr']}>\n"
+        f"Subject: {subject}\n"
+        f"From: {from_name} <{from_addr}>\n"
         f"Date: {message['date_iso']}\n"
         f"{body}\n"
         f"</mail>"
