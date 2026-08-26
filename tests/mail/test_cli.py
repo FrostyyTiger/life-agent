@@ -76,10 +76,13 @@ def test_search_json_output(env_dirs, capsys, fixture_ingester):
     assert hits[0]["id"] == "m005"
 
 
-def test_search_vec_mode_reports_not_available(env_dirs, capsys):
+def test_search_vec_mode_without_embedder_reports_error(env_dirs, capsys, monkeypatch):
+    # _build_embedder would otherwise construct the real SentenceTransformerEmbedder
+    # and download BAAI/bge-m3 — force the "misconfigured" path instead.
+    monkeypatch.setattr(cli, "_build_embedder", lambda env: None)
     exit_code = cli.main(["search", "gutter", "--mode", "vec"])
     assert exit_code == 2
-    assert "stage 5" in capsys.readouterr().err
+    assert "requires an embedder" in capsys.readouterr().err
 
 
 def test_show_prints_headers_and_body(env_dirs, capsys, fixture_ingester):
@@ -125,3 +128,35 @@ def test_sync_without_token_prints_need_marcel(env_dirs, capsys):
     err = capsys.readouterr().err
     assert err.startswith("NEED-MARCEL:")
     assert "mail auth" in err
+
+
+def test_embed_processes_pending_messages(env_dirs, capsys, message_factory, monkeypatch):
+    from tests.mail.fake_embedder import FakeEmbedder
+
+    monkeypatch.setattr(cli, "_build_embedder", lambda env: FakeEmbedder())
+
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    store.upsert_message(conn, message_factory("m1", subject="hello", body_text="world"))
+    conn.close()
+
+    exit_code = cli.main(["embed"])
+    assert exit_code == 0
+    assert "processed=1" in capsys.readouterr().out
+
+
+def test_search_vec_mode_uses_embedder(env_dirs, capsys, message_factory, monkeypatch):
+    from src.mail import embed as embed_mod
+    from tests.mail.fake_embedder import FakeEmbedder
+
+    monkeypatch.setattr(cli, "_build_embedder", lambda env: FakeEmbedder())
+
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    store.upsert_message(
+        conn, message_factory("m1", subject="Roof gutter quote", body_text="Hartmann Dachbau")
+    )
+    embed_mod.embed_pending(conn, FakeEmbedder())
+    conn.close()
+
+    exit_code = cli.main(["search", "gutter quote", "--mode", "vec"])
+    assert exit_code == 0
+    assert "m1" in capsys.readouterr().out

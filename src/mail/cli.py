@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 
+from src.mail import embed as embed_mod
 from src.mail import gmail
 from src.mail import search as search_mod
 from src.mail import store
@@ -14,6 +16,14 @@ from src.mail.config import ConfigError, Env, MailConfig, load_config, load_env
 
 def _db_path(env: Env):
     return env.state_dir / "mail.db"
+
+
+def _models_dir(env: Env):
+    return env.state_dir / "models"
+
+
+def _build_embedder(env: Env):
+    return embed_mod.SentenceTransformerEmbedder(_models_dir(env))
 
 
 def cmd_status(env: Env, config: MailConfig) -> int:
@@ -48,6 +58,8 @@ def _render_hit(row: dict) -> str:
 
 
 def cmd_search(env: Env, args: argparse.Namespace) -> int:
+    embedder = _build_embedder(env) if args.mode in ("vec", "hybrid") else None
+
     conn = store.connect(_db_path(env))
     try:
         try:
@@ -55,6 +67,7 @@ def cmd_search(env: Env, args: argparse.Namespace) -> int:
                 conn,
                 args.query,
                 mode=args.mode,
+                embedder=embedder,
                 from_filter=args.from_,
                 since=args.since,
                 until=args.until,
@@ -117,6 +130,17 @@ def cmd_auth(env: Env, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_embed(env: Env, args: argparse.Namespace) -> int:
+    embedder = _build_embedder(env)
+    conn = store.connect(_db_path(env))
+    try:
+        processed = embed_mod.embed_pending(conn, embedder, budget_seconds=args.budget)
+    finally:
+        conn.close()
+    print(f"embed: processed={processed}")
+    return 0
+
+
 def cmd_sync(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
     try:
         credentials = gmail.load_credentials(env.conf_dir, gmail.READONLY_TOKEN_FILENAME)
@@ -127,13 +151,23 @@ def cmd_sync(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
     service = gmail.build_service(credentials)
     port = gmail.RealGmailPort(service)
 
+    start = time.monotonic()
     conn = store.connect(_db_path(env))
     try:
         result = gmail.sync(conn, port, config, budget_seconds=args.budget)
+
+        embed_budget = None
+        if args.budget is not None:
+            embed_budget = max(0.0, args.budget - (time.monotonic() - start))
+        embedder = _build_embedder(env)
+        processed = embed_mod.embed_pending(conn, embedder, budget_seconds=embed_budget)
     finally:
         conn.close()
 
-    print(f"sync: mode={result.mode} fetched={result.fetched} done={result.done}")
+    print(
+        f"sync: mode={result.mode} fetched={result.fetched} done={result.done} "
+        f"embedded={processed}"
+    )
     return 0
 
 
@@ -162,6 +196,9 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser = subparsers.add_parser("sync", help="fetch new/changed mail from Gmail")
     sync_parser.add_argument("--budget", type=float, default=None, help="seconds")
 
+    embed_parser = subparsers.add_parser("embed", help="embed messages that have no chunks yet")
+    embed_parser.add_argument("--budget", type=float, default=None, help="seconds")
+
     return parser
 
 
@@ -186,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_auth(env, args)
     if args.command == "sync":
         return cmd_sync(env, config, args)
+    if args.command == "embed":
+        return cmd_embed(env, args)
 
     parser.error(f"unknown command: {args.command}")
     return 2

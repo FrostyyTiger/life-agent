@@ -211,3 +211,55 @@ NEED-MARCEL items 1/2/4 below).
 
 **Left for later:** `RealGmailPort` is unverified against a live mailbox — do that as
 soon as NEED-MARCEL item 3 lands (`mail sync --budget 60`), per the plan.
+
+## Stage 5 — embeddings + hybrid search
+
+**Done** (code + fixture/stub-embedder tests, per the plan's verification note).
+
+- `src/mail/embed.py`: `SentenceTransformerEmbedder` (`BAAI/bge-m3`, fp16 on CUDA, CPU
+  with a loud warning otherwise; `HF_HOME=$LIFE_AGENT_STATE/models`). `build_chunk_texts`
+  prepends `Subject:`/`From:` to every chunk (so a fragment of a long body still
+  carries who it's from and what it's about) and chunks the body at ~500 tokens via the
+  model's own tokenizer, capped at 8 chunks/mail. `embed_pending()` processes messages
+  with no chunks yet, newest-first within the last 30 days then oldest-first for the
+  rest, respecting `--budget` (safe to interrupt: a message with any chunks is skipped
+  on the next run).
+- `src/mail/search.py` gained `search_vec` (sqlite-vec KNN over `vec_chunks`, grouped to
+  one best-distance-per-message, same `--from`/`--since`/`--until` filters as FTS) and
+  `search_hybrid` (reciprocal rank fusion, `k=60`, of the FTS and vec rankings — the
+  plan's stated default once embeddings exist). `search()` now requires an `embedder`
+  for `vec`/`hybrid` and raises a clear `SearchError` if one isn't supplied, rather than
+  the stage-4 placeholder that refused those modes outright.
+- `cli.py`: `mail embed [--budget SECONDS]`; `mail search` builds an embedder lazily
+  (only when `--mode vec|hybrid`, since constructing it loads the model); `mail sync`
+  now calls `embed_pending` with whatever budget remains after the fetch, sharing one
+  `--budget` across both as the plan asks.
+- Tests use a `FakeEmbedder` (`tests/mail/fake_embedder.py`) — deterministic
+  bag-of-hashed-words vectors at the real 1024-dim width, no model download — per the
+  plan's explicit "tiny stub embedder (no model download in CI)" instruction.
+
+**Verified:**
+- `uv run pytest` — 90 passed in ~10s. New: 7 embed tests (chunk text construction incl.
+  the empty-body case, the 8-chunk cap, populating `chunks`/`vec_chunks`, skip-if-
+  already-embedded, budget cutoff + resume, recent-then-oldest ordering); 10 more
+  search tests (vec search by body vocabulary, `--from` filter, deleted-row exclusion,
+  hybrid combining and deduping both rankings, mode-without-embedder errors, unknown
+  mode); 3 CLI tests (`mail embed`, `mail search --mode vec` via a monkeypatched
+  embedder, and the without-embedder error path — all via `FakeEmbedder`, no download).
+- **Caught and fixed before it shipped:** a stale stage-4 CLI test
+  (`test_search_vec_mode_reports_not_available`) still asserted `--mode vec` fails
+  outright. Now that `cli._build_embedder` actually constructs
+  `SentenceTransformerEmbedder`, that test silently started downloading the real
+  `BAAI/bge-m3` model from Hugging Face on every `pytest` run — a 3.5-minute full suite
+  instead of ~10 seconds, with no test asserting anything about it. Replaced with a
+  test that monkeypatches `cli._build_embedder` to force the "no embedder" error path
+  instead.
+- **Real GPU run deliberately deferred**, not skipped: at the time of this stage the
+  host showed swap at 85% full (~3.4/4 GiB) and ~1.6 GiB RAM immediately free — visible
+  contention from the other concurrent Claude Code sessions this box runs. Downloading
+  a ~2 GB model and running it isn't worth adding memory pressure to a shared,
+  no-physical-access host for a check the plan itself schedules alongside the real
+  sync ("run the real-host checks … as soon as the readonly token exists"), which is
+  still blocked on NEED-MARCEL item 3. Owner confirmed deferring is correct
+  (2026-08-26). Do this together with the first real `mail sync`, logging chunks/sec
+  here once it runs.

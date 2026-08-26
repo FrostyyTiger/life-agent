@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from src.mail import search, store
+from src.mail import embed, search, store
+from tests.mail.fake_embedder import FakeEmbedder
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "examples" / "mail"
 
@@ -99,9 +100,19 @@ def test_search_dispatches_fts_mode(loaded_conn):
     assert [h["id"] for h in hits] == ["m005"]
 
 
-def test_search_vec_mode_not_yet_available(loaded_conn):
-    with pytest.raises(search.SearchError, match="stage 5"):
+def test_vec_mode_without_embedder_raises(loaded_conn):
+    with pytest.raises(search.SearchError, match="requires an embedder"):
         search.search(loaded_conn, "gutter", mode="vec")
+
+
+def test_hybrid_mode_without_embedder_raises(loaded_conn):
+    with pytest.raises(search.SearchError, match="requires an embedder"):
+        search.search(loaded_conn, "gutter", mode="hybrid")
+
+
+def test_unknown_mode_raises(loaded_conn):
+    with pytest.raises(search.SearchError, match="unknown search mode"):
+        search.search(loaded_conn, "gutter", mode="telepathy")
 
 
 def test_invalid_date_filter_raises(loaded_conn):
@@ -130,3 +141,45 @@ def test_query_terms_are_anded(loaded_conn):
 def test_trailing_star_is_prefix_search(loaded_conn):
     hits = search.search_fts(loaded_conn, "gut*")
     assert {h["id"] for h in hits} == {"m005"}
+
+
+@pytest.fixture
+def embedder():
+    return FakeEmbedder()
+
+
+@pytest.fixture
+def embedded_conn(loaded_conn, embedder):
+    embed.embed_pending(loaded_conn, embedder)
+    return loaded_conn
+
+
+def test_vec_search_finds_message_by_body_vocabulary(embedded_conn, embedder):
+    # m004's body is the only one containing "bestätigen" — no shared FTS-style exact
+    # term needed for the fake embedder's bag-of-words vectors to land it first.
+    hits = search.search_vec(embedded_conn, "bestätigen Termin", embedder)
+    assert hits and hits[0]["id"] == "m004"
+
+
+def test_vec_search_respects_from_filter(embedded_conn, embedder):
+    hits = search.search_vec(
+        embedded_conn, "gutter quote roof", embedder, from_filter="hartmann-dachbau.example"
+    )
+    assert all("hartmann-dachbau.example" in h["from_addr"] for h in hits)
+
+
+def test_vec_search_excludes_deleted(embedded_conn, embedder):
+    store.mark_deleted(embedded_conn, "m005", "2026-08-20T00:00:00Z")
+    hits = search.search_vec(embedded_conn, "gutter quote roof", embedder)
+    assert "m005" not in {h["id"] for h in hits}
+
+
+def test_hybrid_search_combines_both_rankings(embedded_conn, embedder):
+    hits = search.search(embedded_conn, "gutter", mode="hybrid", embedder=embedder)
+    assert hits and hits[0]["id"] == "m005"
+
+
+def test_hybrid_search_dedupes_across_rankings(embedded_conn, embedder):
+    hits = search.search(embedded_conn, "gutter", mode="hybrid", embedder=embedder)
+    ids = [h["id"] for h in hits]
+    assert len(ids) == len(set(ids))
