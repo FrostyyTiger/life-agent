@@ -60,8 +60,36 @@ a shape invented two stages early.
 - `bin/mail status` with env vars pointed at the real dirs → prints the real address,
   `tag_since`, and `messages: 0 (no database yet — run \`mail sync\`)`, exit 0.
 
-**Left for stage 2:** the actual schema (`messages`, `messages_fts`, `chunks`,
-`vec_chunks`, `tags`, `feedback`, `rules`, `digests`, `sync_state`, `pending`) and
-`store.py`'s insert/upsert/migration logic. `LIFE_AGENT_STATE` does not exist as a
-directory on disk yet — stage 2 or 3 will create it (currently only referenced via env
-var; nothing has written into it).
+## Stage 2 — store
+
+**Done.**
+
+- `src/mail/store.py`: `connect(db_path)` creates `$LIFE_AGENT_STATE` (mode `0700`) and
+  the db file if needed, sets WAL + foreign keys, loads the `sqlite-vec` extension, and
+  applies migrations tracked in a `schema_migrations` table (so re-opening an existing
+  db is a no-op, and future schema changes are additive migrations rather than a
+  rewrite).
+- Full schema in one migration: `messages`, `messages_fts` (FTS5, external content on
+  `messages.rowid` with insert/update/delete triggers keeping it in sync), `chunks` +
+  `vec_chunks` (`sqlite-vec`, `float[1024]`, rowid-linked to `chunks.id`), `tags`,
+  `feedback`, `rules`, `digests`, `sync_state`, `pending`.
+- `upsert_message`/`get_message`/`mark_deleted`/`count_messages`. Deletions are never
+  physical — `mark_deleted` sets `deleted_at`; re-upserting an existing message (as a
+  resync would) never clears it, so a message can't be silently "undeleted" by a stale
+  refetch.
+- `cli.py`'s `mail status` now reports a real message count via `store.connect` instead
+  of a stage-1 placeholder query; first run creates the database and says so.
+
+**Verified:**
+- `uv run pytest` — 30 passed (11 new store tests: connect/idempotence,
+  upsert/get/update, delete-preserves-row, re-upsert-does-not-undelete, FTS finds an
+  inserted message and stops finding it after the subject changes, `vec_chunks` accepts
+  a `sqlite-vec` embedding).
+- `bin/mail status` against the real `$LIFE_AGENT_STATE` — creates
+  `/…/life-agent-state/mail.db` (`0700` dir) on first run, reports `messages: 0
+  (database just created — run \`mail sync\`)`.
+
+**Left for later stages:** `LIFE_AGENT_STATE` is currently owned by the owner account
+(created by this session, which runs as the owner) — stage 8's bootstrap reassigns it
+to `life-agent:life-agent` once that user exists. Nothing writes real data into it yet;
+stages 3-7 do.

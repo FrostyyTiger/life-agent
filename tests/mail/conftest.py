@@ -46,3 +46,38 @@ def no_env(monkeypatch):
 @pytest.fixture
 def fixture_mail_files():
     return sorted(FIXTURES_DIR.glob("*.eml"))
+
+
+def make_message(id: str, **overrides) -> dict:
+    """A minimal-but-complete `messages` row, for tests that don't care about most fields."""
+    message = {
+        "id": id,
+        "thread_id": f"thread-{id}",
+        "history_id": "1",
+        "internal_date": 1755248400000,
+        "date_iso": "2026-08-15T09:00:00+02:00",
+        "from_addr": "sender@example.com",
+        "from_name": "Sender Example",
+        "to_addrs": "test-owner@example.com",
+        "cc_addrs": None,
+        "reply_to": None,
+        "message_id_hdr": f"<{id}@fixtures.example>",
+        "in_reply_to": None,
+        "references_hdr": None,
+        "subject": "Test subject",
+        "snippet": "Test snippet",
+        "body_text": "Test body",
+        "labels_json": "[]",
+        "has_attachments": 0,
+        "attachments_json": "[]",
+        "size": 100,
+        "is_from_owner": 0,
+        "fetched_at": "2026-08-15T09:05:00Z",
+    }
+    message.update(overrides)
+    return message
+
+
+@pytest.fixture
+def message_factory():
+    return make_message

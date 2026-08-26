@@ -16,17 +16,16 @@ def test_status_works_with_empty_db(env_dirs, capsys):
     out = capsys.readouterr().out
     assert "test-owner@example.com" in out
     assert "2026-01-01" in out
-    assert "messages:         0" in out
+    assert "messages:         0 (database just created" in out
 
 
-def test_status_counts_existing_messages(env_dirs, capsys):
-    import sqlite3
+def test_status_counts_existing_messages(env_dirs, capsys, message_factory):
+    from src.mail import store
 
     db_path = env_dirs["state"] / "mail.db"
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE messages (id TEXT PRIMARY KEY)")
-    conn.executemany("INSERT INTO messages VALUES (?)", [("a",), ("b",), ("c",)])
-    conn.commit()
+    conn = store.connect(db_path)
+    for msg_id in ("a", "b", "c"):
+        store.upsert_message(conn, message_factory(msg_id))
     conn.close()
 
     exit_code = cli.main(["status"])
