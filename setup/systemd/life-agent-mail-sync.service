@@ -30,6 +30,9 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=__STATE_DIR__
+# load_credentials() rewrites the readonly token on refresh — the specific file, not
+# the whole (owner-owned) __CONF_DIR__.
+ReadWritePaths=__CONF_DIR__/gmail-readonly-token.json
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import secrets
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -383,8 +384,12 @@ def digest(
 
 def git_commit_data_repo(data_dir: Path, message: str) -> bool:
     """Commits everything changed in the data repo. Returns False (does not raise) if
-    there was nothing to commit or git isn't available — this is a convenience for the
-    agent's own audit trail, not something that should fail the digest run.
+    there was nothing to commit, git isn't available, or the commit failed for any
+    other reason (e.g. life-agent has no git identity, or git's "dubious ownership"
+    guard rejects a repo it doesn't own — see setup/bootstrap.sh's git config for how
+    that's meant to be resolved) — this is a convenience for the agent's own audit
+    trail, not something that should fail the digest run. Failures print to stderr so
+    they're at least visible in the journal rather than silent.
     """
     try:
         subprocess.run(["git", "-C", str(data_dir), "add", "-A"], check=True, capture_output=True)
@@ -392,6 +397,10 @@ def git_commit_data_repo(data_dir: Path, message: str) -> bool:
             ["git", "-C", str(data_dir), "commit", "-m", message],
             capture_output=True, text=True,
         )
+        if result.returncode != 0 and "nothing to commit" not in result.stdout:
+            print(f"digest: git commit failed: {result.stdout.strip() or result.stderr.strip()}",
+                  file=sys.stderr)
         return result.returncode == 0
-    except (subprocess.SubprocessError, FileNotFoundError):
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        print(f"digest: git commit failed: {exc}", file=sys.stderr)
         return False

@@ -1,3 +1,5 @@
+import sqlite3
+
 import sqlite_vec
 import pytest
 
@@ -112,3 +114,32 @@ def test_vec_chunks_table_accepts_embeddings(conn, message_factory):
 
     row = conn.execute("SELECT rowid FROM vec_chunks WHERE rowid = ?", (chunk_id,)).fetchone()
     assert row is not None
+
+
+def test_wal_db_opens_mode_ro_after_writer_closes(tmp_path, message_factory):
+    """serve.py's query socket opens mail.db `mode=ro` — this is the thing that
+    actually enforces read-only access; the systemd unit must not *also* bind-mount
+    the state dir read-only (ReadOnlyPaths=), because SQLite may still need to create
+    a -shm file for WAL locking even on a logically read-only connection, and a
+    read-only bind mount blocks that at the OS level regardless of what SQLite asks
+    for. This test only checks the SQLite/WAL side of that; the systemd sandboxing
+    side isn't something a unit test can exercise.
+    """
+    db_path = tmp_path / "mail.db"
+    writer = store.connect(db_path)
+    store.upsert_message(writer, message_factory("m1"))
+    writer.close()  # simulates a checkpoint/close between sync and a query
+
+    reader = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    reader.row_factory = sqlite3.Row
+    reader.enable_load_extension(True)
+    sqlite_vec.load(reader)
+    reader.enable_load_extension(False)
+
+    row = reader.execute("SELECT id FROM messages WHERE id = ?", ("m1",)).fetchone()
+    assert row["id"] == "m1"
+
+    with pytest.raises(sqlite3.OperationalError):
+        reader.execute("INSERT INTO messages(id, fetched_at) VALUES ('m2', 'x')")
+
+    reader.close()

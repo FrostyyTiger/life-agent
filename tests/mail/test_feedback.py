@@ -137,6 +137,26 @@ def test_process_feedback_stores_feedback_and_rules_and_jsonl(conn, data_dir, me
         json.loads(line)  # must be valid JSON
 
 
+def test_process_feedback_tolerates_an_unwritable_jsonl(conn, data_dir, message_factory, capsys):
+    """DATA_DIR's own directory bits don't grant life-agent write access to CREATE a
+    new file there (bootstrap must pre-create mail-feedback.jsonl group-writable) — if
+    that hasn't happened, appending fails. A storage hiccup on the jsonl mirror must
+    not lose the feedback/rules already committed to the database, or crash the run.
+    """
+    _seed_digest(conn, refs={"3": "m3"})
+    _owner_reply(conn, message_factory,
+                 in_reply_to="<digest-20260814-abc123@life-agent>", body="#3 junk")
+
+    data_dir.chmod(0o500)  # no write — simulates the file not existing and unable to be created
+    try:
+        result = feedback.process_feedback(conn, data_dir)
+    finally:
+        data_dir.chmod(0o700)
+
+    assert result.feedback == 1  # still recorded in the database
+    assert "could not append" in capsys.readouterr().err
+
+
 def test_process_feedback_is_idempotent_safe_to_rerun(conn, data_dir, message_factory):
     """Re-running after no new replies arrived shouldn't error or double-append."""
     _seed_digest(conn, refs={"3": "m3"})

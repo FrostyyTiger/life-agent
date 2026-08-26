@@ -6,7 +6,7 @@ Everything needed to install the boundaries described in
 | File | Runs as | Purpose |
 | --- | --- | --- |
 | `bootstrap.sh` | you, with `sudo` | Creates the agent user, sets ownership and modes. Dry-run by default. |
-| `systemd/life-agent-brief.*` | `life-agent` | The 07:00 daily brief job |
+| `systemd/life-agent-brief.*` | `life-agent` | The 07:00 daily brief job — **not installed** (below): its job, `src/main.py`, doesn't exist yet |
 | `systemd/life-agent-publish.*` | you | 07:30 secret-scan and push |
 | `systemd/life-agent-deadman.*` | you | 08:00 dead-man's switch |
 | `deadman.sh` | you | Asserts today's mail digest exists; notifies only on absence |
@@ -41,8 +41,8 @@ grep -r '__' /tmp/life-agent-units && echo "unsubstituted placeholders remain" |
 
 sudo cp /tmp/life-agent-units/* /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now life-agent-brief.timer \
-                            life-agent-publish.timer \
+# life-agent-brief.timer is deliberately NOT enabled here — see the file table above.
+sudo systemctl enable --now life-agent-publish.timer \
                             life-agent-deadman.timer
 sudo systemctl enable --now life-agent-mail-sync.timer \
                             life-agent-mail-tag.timer \
@@ -83,7 +83,7 @@ sudo -u life-agent touch ~/life-agent/x            # expect: Permission denied
 sudo -u life-agent touch ~/life-agent-data/threads/x  # expect: success
 sudo -u life-agent cat ~/.config/life-agent/api-key   # expect: success (ACL)
 sudo -u life-agent ls ~/                           # expect: Permission denied
-systemctl list-timers 'life-agent-*'               # expect: three timers (+ three more, mail-v1)
+systemctl list-timers 'life-agent-*'               # expect: publish + deadman + three mail timers (five)
 
 # mail-v1 specific — the whole point is that these fail for you:
 cat ~/life-agent-state/mail.db                          # expect: Permission denied

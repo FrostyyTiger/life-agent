@@ -10,13 +10,20 @@ Wants=network-online.target
 Type=oneshot
 User=life-agent
 Group=life-agent
-UMask=0077
+# 0007, not 0077: the brief file and mail-feedback.jsonl this unit writes into
+# __DATA_DIR__ must stay group-readable so the owner and the publish job can read
+# them. __STATE_DIR__ stays private via its own 0700 directory mode regardless.
+UMask=0007
 WorkingDirectory=__CODE_DIR__
 Environment=HOME=/var/lib/life-agent
 Environment=LIFE_AGENT_DATA=__DATA_DIR__
 Environment=LIFE_AGENT_CONF=__CONF_DIR__
 Environment=LIFE_AGENT_STATE=__STATE_DIR__
 Environment=PATH=/usr/bin:/bin:__CODE_DIR__/.venv/bin:__CLAUDE_BIN_DIR__
+# git_commit_data_repo() needs an identity and permission to commit into a repo it
+# doesn't own (see bootstrap.sh's [7/7]) — pointed here explicitly rather than relying
+# on git's default $HOME/.gitconfig lookup under sandboxing.
+Environment=GIT_CONFIG_GLOBAL=/var/lib/life-agent/.gitconfig
 ExecStart=__CODE_DIR__/.venv/bin/python -m src.mail.cli digest
 
 NoNewPrivileges=true
@@ -24,6 +31,9 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=__STATE_DIR__ __DATA_DIR__
+# load_credentials() rewrites the insert token on refresh — the specific file, not
+# the whole (owner-owned) __CONF_DIR__.
+ReadWritePaths=__CONF_DIR__/gmail-insert-token.json
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

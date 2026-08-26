@@ -10,7 +10,11 @@ Wants=network-online.target
 Type=oneshot
 User=life-agent
 Group=life-agent
-UMask=0077
+# 0007, not 0077: files this unit creates in __DATA_DIR__ (mail-feedback.jsonl) must
+# stay group-readable/writable so the owner (a member of group life-agent) and the
+# publish job can read them. __STATE_DIR__ stays private regardless of this — its own
+# 0700 directory mode blocks group access entirely, independent of file-level bits.
+UMask=0007
 WorkingDirectory=__CODE_DIR__
 Environment=HOME=/var/lib/life-agent
 Environment=LIFE_AGENT_DATA=__DATA_DIR__

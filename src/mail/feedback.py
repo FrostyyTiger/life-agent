@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,9 +136,18 @@ def parse_feedback_lines(body: str, refs: dict[str, str]) -> list[dict]:
 
 
 def _append_jsonl(data_dir: Path, record: dict) -> None:
+    """The jsonl mirror is a convenience (a record outside the unversioned mail.db),
+    not the source of truth — the feedback/rules tables are. If bootstrap hasn't
+    pre-created the file with a group-writable mode yet (DATA_DIR's own directory bits
+    don't grant life-agent write access to create a new file there), log loudly and
+    keep going rather than lose an otherwise-successfully-stored feedback item.
+    """
     path = data_dir / "mail-feedback.jsonl"
-    with path.open("a") as f:
-        f.write(json.dumps(record) + "\n")
+    try:
+        with path.open("a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError as exc:
+        print(f"feedback: could not append to {path}: {exc}", file=sys.stderr)
 
 
 def process_feedback(conn, data_dir: Path) -> FeedbackResult:

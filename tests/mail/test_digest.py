@@ -260,3 +260,83 @@ def test_build_email_uses_constant_recipient_never_model_output(config):
     assert config.address in msg["From"]
     assert message_id.startswith("<digest-20260815-")
     assert message_id.endswith("@life-agent>")
+
+
+# --- git_commit_data_repo ---
+
+
+def _init_git_repo(path):
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+
+
+def test_git_commit_data_repo_commits_a_change(tmp_path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs" / "2026-08-15-mail.md").write_text("hello")
+
+    committed = digest.git_commit_data_repo(tmp_path, "mail digest: 2026-08-15")
+
+    assert committed is True
+    import subprocess
+
+    log = subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, capture_output=True, text=True)
+    assert "mail digest: 2026-08-15" in log.stdout
+
+
+def test_git_commit_data_repo_nothing_to_commit_returns_false(tmp_path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "briefs" / "a.md").write_text("hello")
+    digest.git_commit_data_repo(tmp_path, "first commit")
+
+    committed = digest.git_commit_data_repo(tmp_path, "second commit, nothing changed")
+    assert committed is False
+
+
+def test_git_commit_data_repo_missing_identity_fails_gracefully(tmp_path, capsys, monkeypatch):
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "a.md").write_text("hello")
+
+    # Simulate life-agent before bootstrap writes its .gitconfig: no identity
+    # reachable via HOME, and no ambient identity from this dev environment's own
+    # git config (which would otherwise mask the failure this test checks for).
+    empty_home = tmp_path.parent / "empty-home"
+    empty_home.mkdir()
+    monkeypatch.setenv("HOME", str(empty_home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_home / "no-such-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_home / "no-such-gitconfig"))
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(var, raising=False)
+
+    committed = digest.git_commit_data_repo(tmp_path, "should fail")
+
+    assert committed is False
+    assert "git commit failed" in capsys.readouterr().err
+
+
+def test_digest_calls_git_commit_after_a_successful_write(config, env_dirs, message_factory,
+                                                            monkeypatch):
+    _init_git_repo(env_dirs["data"])
+    db_conn = store.connect(env_dirs["state"] / "mail.db")
+    _tagged_message(db_conn, message_factory, "m1", category="needs-you", importance=3)
+    db_conn.close()
+
+    calls = []
+    # cli.py imports this module as `digest_mod` — same object, patch it here.
+    monkeypatch.setattr(
+        digest, "git_commit_data_repo",
+        lambda data_dir, message: calls.append((data_dir, message)) or True,
+    )
+
+    from src.mail import cli
+
+    exit_code = cli.main(["digest", "--date", "2026-08-15"])
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0][1] == "mail digest: 2026-08-15"

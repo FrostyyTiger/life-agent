@@ -31,7 +31,14 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadOnlyPaths=__STATE_DIR__
+# NOT ReadOnlyPaths=__STATE_DIR__: that bind-mounts the directory read-only at the OS
+# level, and SQLite can still need to create a -shm file for WAL locking on a purely
+# logical read-only connection — a read-only mount blocks that outright and serve.py
+# fails to open the db. The actual read-only guarantee is `mode=ro` in serve.py's own
+# sqlite3.connect() URI (application-level, and the thing that matters); the OS-level
+# grant just needs to not get in its way. See tests/mail/test_store.py's
+# test_wal_db_opens_mode_ro_after_writer_closes for the SQLite/WAL side of this.
+ReadWritePaths=__STATE_DIR__
 ReadWritePaths=/run/life-agent
 ProtectKernelTunables=true
 ProtectKernelModules=true

@@ -237,6 +237,14 @@ def cmd_digest(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
         print(f"digest: {result.path} already exists, not overwriting")
         return 0
 
+    if result.written:
+        committed = digest_mod.git_commit_data_repo(
+            env.data_dir, f"mail digest: {result.date.isoformat()}"
+        )
+        if not committed:
+            print("digest: nothing to commit in the data repo (or git failed — see above)",
+                  file=sys.stderr)
+
     print(
         f"digest: date={result.date} path={result.path} written={result.written} "
         f"degraded={result.degraded} inserted={result.inserted}"
