@@ -260,6 +260,6 @@ soon as NEED-MARCEL item 3 lands (`mail sync --budget 60`), per the plan.
   a ~2 GB model and running it isn't worth adding memory pressure to a shared,
   no-physical-access host for a check the plan itself schedules alongside the real
   sync ("run the real-host checks … as soon as the readonly token exists"), which is
-  still blocked on NEED-MARCEL item 3. Owner confirmed deferring is correct
-  (2026-08-26). Do this together with the first real `mail sync`, logging chunks/sec
-  here once it runs.
+  still blocked on NEED-MARCEL item 3. Deferred by the executor because of host memory
+  pressure; reviewer agreed (2026-08-26). Do this together with the first real
+  `mail sync`, logging chunks/sec here once it runs.
