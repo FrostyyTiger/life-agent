@@ -160,3 +160,34 @@ def test_search_vec_mode_uses_embedder(env_dirs, capsys, message_factory, monkey
     exit_code = cli.main(["search", "gutter quote", "--mode", "vec"])
     assert exit_code == 0
     assert "m1" in capsys.readouterr().out
+
+
+def test_tag_without_token_fails_loudly_not_need_marcel(env_dirs, capsys, message_factory):
+    # mail tag has no NEED-MARCEL short-circuit like auth/sync — it just tries to run
+    # claude and claude_cli.py's own missing-token error surfaces.
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    store.upsert_message(conn, message_factory("m1"))
+    conn.close()
+
+    exit_code = cli.main(["tag"])
+    assert exit_code == 0  # tag() itself doesn't fail the whole command
+    out = capsys.readouterr().out
+    assert "failed=1" in out
+
+
+def test_tag_uses_fake_claude_binary(env_dirs, capsys, message_factory, fake_claude):
+    conf_dir = env_dirs["conf"]
+    (conf_dir / "claude-oauth-token").write_text("fake-token\n")
+
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    store.upsert_message(conn, message_factory("m1", subject="Roof gutter quote"))
+    conn.close()
+
+    fake_claude(response={"tags": [
+        {"id": "m1", "category": "needs-you", "importance": 2, "summary": "s",
+         "action": None, "deadline": None, "people": []},
+    ]})
+
+    exit_code = cli.main(["tag"])
+    assert exit_code == 0
+    assert "tagged=1" in capsys.readouterr().out

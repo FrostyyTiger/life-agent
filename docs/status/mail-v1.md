@@ -263,3 +263,62 @@ soon as NEED-MARCEL item 3 lands (`mail sync --budget 60`), per the plan.
   still blocked on NEED-MARCEL item 3. Deferred by the executor because of host memory
   pressure; reviewer agreed (2026-08-26). Do this together with the first real
   `mail sync`, logging chunks/sec here once it runs.
+
+## Stage 6 — tagging via Claude Code
+
+**Done** (code + fake-`claude`-binary tests; the real run needs NEED-MARCEL item 2).
+
+- `src/mail/claude_cli.py`: runs `claude -p --bare --model <m> --tools "" \
+  --no-session-persistence --output-format json --json-schema <schema>`, prompt on
+  stdin, `cwd=$LIFE_AGENT_STATE/claude-cwd`, `HOME=$LIFE_AGENT_STATE/home`,
+  `CLAUDE_CODE_OAUTH_TOKEN` read from `$LIFE_AGENT_CONF/claude-oauth-token` and injected
+  as an env var only — confirmed via a test that spies on the actual `subprocess.run`
+  call that the token string never appears in argv. `claude` is invoked by bare name
+  (resolved via `PATH`), never a hardcoded path, since the real path lives under the
+  owner's nvm tree and is host-specific. Non-zero exit, invalid JSON, and an
+  `is_error: true` envelope all raise a clear `ClaudeCliError`.
+- **Assumption flagged for real verification:** `--json-schema`'s structured output was
+  observed (via a real `claude -p` call against this host, with no auth configured) to
+  land in the JSON envelope's `result` field as a *string* that itself needs parsing,
+  not a nested object — the auth failure that call hit prevented seeing an actual
+  successful schema-shaped reply. `claude_cli.run()` handles both shapes (parses
+  `result` again if it's a string, passes it through if it's already a dict), but this
+  needs confirming against a real successful call once NEED-MARCEL item 2 lands.
+- `prompts/tag.md` + `src/mail/tag.py`: schema (`category` enum, `importance` 0-3,
+  `summary` ≤200 chars, `action` ≤120 chars or null, ISO `deadline` or null, `people`)
+  validated independently of whatever `--json-schema` enforced, since how strictly the
+  CLI enforces the schema itself is unverified (same reason as above). Each `<mail
+  id="…">` block is told explicitly that its content is untrusted data, not
+  instructions. Mute rule skips the model entirely (`category=junk`, `model=rule:mute`);
+  VIP rule floors importance to ≥2 *after* the model call, per the plan. A message that
+  fails validation 3 times gets `category=unknown` and stops being retried; anything
+  under 3 attempts is retried on the next `mail tag` run.
+- `select_messages_to_tag`: `internal_date >= tag_since`, not from the owner, not
+  deleted, not already successfully tagged or exhausted, and — reserving a naming
+  convention stage 7 will actually produce — not one of the archive's own digest mails
+  (`message_id_hdr LIKE '<digest-%'`).
+- `mail tag [--limit N]` wired into `cli.py`.
+
+**Verified:**
+- `uv run pytest` — 113 passed. New: 8 `claude_cli.py` tests against a real fake
+  `claude` executable placed on `PATH` (round trip, non-zero exit, malformed stdout,
+  `is_error` envelope, missing token, the token-never-in-argv spy test); 13 `tag.py`
+  tests (selection filters including the digest-mail exclusion and the 3-attempt
+  retry/give-up cycle, mute/VIP rules, a successful round trip, a `ClaudeCliError`
+  marking a whole batch as one failed attempt each, a malformed reply being rejected
+  without crashing, **the prompt-injection fixture** tagged correctly both via a
+  python-level fake runner and via the real fake-binary subprocess path — the injected
+  instructions have no effect because there is nothing in the pipeline capable of
+  acting on them); 2 CLI tests.
+- **Bug caught while writing these tests:** `tests/mail/conftest.py`'s
+  `make_message()` fixture had a `date_iso` of `2026-08-15` but an `internal_date`
+  that actually corresponded to `2025-08-15` — a year off, unnoticed until
+  `select_messages_to_tag`'s `internal_date >= tag_since` filter started excluding
+  every default-constructed test message. Fixed at the source (the shared fixture),
+  not by patching each affected test.
+- `bin/mail tag --limit 5` on the real host (empty archive, no token yet) — reaches the
+  `claude` binary resolution correctly (`which claude` succeeds via `PATH`) and returns
+  `tagged=0 muted=0 failed=0` cleanly since there's nothing to tag yet.
+
+**NEED-MARCEL:** item 2 (`claude setup-token` → `$LIFE_AGENT_CONF/claude-oauth-token`)
+is what's blocking a real tagging run — flagged in stage 3's section, still open.

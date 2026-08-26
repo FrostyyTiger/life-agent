@@ -1,3 +1,4 @@
+import json
 import os
 import textwrap
 from pathlib import Path
@@ -54,7 +55,7 @@ def make_message(id: str, **overrides) -> dict:
         "id": id,
         "thread_id": f"thread-{id}",
         "history_id": "1",
-        "internal_date": 1755248400000,
+        "internal_date": 1786777200000,  # 2026-08-15T09:00:00+02:00 — must match date_iso below
         "date_iso": "2026-08-15T09:00:00+02:00",
         "from_addr": "sender@example.com",
         "from_name": "Sender Example",
@@ -99,3 +100,47 @@ def ingest_fixture(conn, path: Path, id: str, **overrides) -> dict:
 @pytest.fixture
 def fixture_ingester():
     return ingest_fixture
+
+
+@pytest.fixture
+def fake_claude(tmp_path, monkeypatch):
+    """Puts a fake `claude` executable on PATH so claude_cli.py's real subprocess
+    invocation gets exercised end to end, per the plan's "fake claude binary on PATH"
+    verification note — rather than mocking claude_cli at the Python level, which
+    would test nothing about the actual command line / env / stdin contract.
+
+    Returns a `configure(...)` callable:
+      configure(response={"tags": [...]})   -> envelope wraps the JSON-encoded response
+      configure(raw_stdout="not json")       -> stdout is exactly this string
+      configure(response=..., exit_code=1)   -> claude exits non-zero
+      configure(is_error=True, result="...") -> an is_error envelope
+    """
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    script = bin_dir / "claude"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "response_file = os.environ.get('FAKE_CLAUDE_RESPONSE_FILE')\n"
+        "exit_code = int(os.environ.get('FAKE_CLAUDE_EXIT_CODE', '0'))\n"
+        "if response_file:\n"
+        "    sys.stdout.write(open(response_file).read())\n"
+        "sys.exit(exit_code)\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    response_path = tmp_path / "fake_claude_response.json"
+
+    def configure(response=None, exit_code=0, raw_stdout=None, is_error=False, result=None):
+        if raw_stdout is not None:
+            stdout = raw_stdout
+        elif is_error:
+            stdout = json.dumps({"is_error": True, "result": result})
+        else:
+            stdout = json.dumps({"is_error": False, "result": json.dumps(response)})
+        response_path.write_text(stdout)
+        monkeypatch.setenv("FAKE_CLAUDE_RESPONSE_FILE", str(response_path))
+        monkeypatch.setenv("FAKE_CLAUDE_EXIT_CODE", str(exit_code))
+
+    return configure

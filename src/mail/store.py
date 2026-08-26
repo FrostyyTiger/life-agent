@@ -229,3 +229,40 @@ def count_messages(conn: sqlite3.Connection, include_deleted: bool = True) -> in
     return conn.execute(
         "SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL"
     ).fetchone()[0]
+
+
+_TAG_COLUMNS = (
+    "message_id", "category", "importance", "summary", "action", "deadline",
+    "people_json", "model", "attempts", "tagged_at", "error",
+)
+
+
+def get_tag(conn: sqlite3.Connection, message_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM tags WHERE message_id = ?", (message_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_tag(conn: sqlite3.Connection, tag: dict) -> None:
+    missing = [c for c in _TAG_COLUMNS if c not in tag]
+    if missing:
+        raise ValueError(f"upsert_tag: missing required field(s): {missing}")
+
+    columns = _TAG_COLUMNS
+    placeholders = ", ".join(f":{c}" for c in columns)
+    update_clause = ", ".join(f"{c}=excluded.{c}" for c in columns if c != "message_id")
+
+    conn.execute(
+        f"INSERT INTO tags ({', '.join(columns)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(message_id) DO UPDATE SET {update_clause}",
+        tag,
+    )
+    conn.commit()
+
+
+def get_recent_feedback(conn: sqlite3.Connection, limit: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM feedback ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [dict(row) for row in rows]

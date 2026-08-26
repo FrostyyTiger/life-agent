@@ -11,6 +11,7 @@ from src.mail import embed as embed_mod
 from src.mail import gmail
 from src.mail import search as search_mod
 from src.mail import store
+from src.mail import tag as tag_mod
 from src.mail.config import ConfigError, Env, MailConfig, load_config, load_env
 
 
@@ -141,6 +142,18 @@ def cmd_embed(env: Env, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tag(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
+    conn = store.connect(_db_path(env))
+    try:
+        result = tag_mod.tag(
+            conn, config, conf_dir=env.conf_dir, state_dir=env.state_dir, limit=args.limit
+        )
+    finally:
+        conn.close()
+    print(f"tag: tagged={result.tagged} muted={result.muted} failed={result.failed}")
+    return 0
+
+
 def cmd_sync(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
     try:
         credentials = gmail.load_credentials(env.conf_dir, gmail.READONLY_TOKEN_FILENAME)
@@ -199,6 +212,9 @@ def build_parser() -> argparse.ArgumentParser:
     embed_parser = subparsers.add_parser("embed", help="embed messages that have no chunks yet")
     embed_parser.add_argument("--budget", type=float, default=None, help="seconds")
 
+    tag_parser = subparsers.add_parser("tag", help="tag new messages via claude -p")
+    tag_parser.add_argument("--limit", type=int, default=None)
+
     return parser
 
 
@@ -225,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_sync(env, config, args)
     if args.command == "embed":
         return cmd_embed(env, args)
+    if args.command == "tag":
+        return cmd_tag(env, config, args)
 
     parser.error(f"unknown command: {args.command}")
     return 2
