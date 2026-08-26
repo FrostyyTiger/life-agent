@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
+from src.mail import search as search_mod
 from src.mail import store
 from src.mail.config import ConfigError, Env, MailConfig, load_config, load_env
 
@@ -40,10 +42,87 @@ def cmd_status(env: Env, config: MailConfig) -> int:
     return 0
 
 
+def _render_hit(row: dict) -> str:
+    return f"{row['id']}  {row['date_iso']}  {row['from_addr']:<30}  {row['subject']}"
+
+
+def cmd_search(env: Env, args: argparse.Namespace) -> int:
+    conn = store.connect(_db_path(env))
+    try:
+        try:
+            hits = search_mod.search(
+                conn,
+                args.query,
+                mode=args.mode,
+                from_filter=args.from_,
+                since=args.since,
+                until=args.until,
+                limit=args.limit,
+            )
+        except search_mod.SearchError as exc:
+            print(f"mail: {exc}", file=sys.stderr)
+            return 2
+    finally:
+        conn.close()
+
+    if args.json:
+        print(json.dumps(hits, indent=2))
+    elif not hits:
+        print("no results")
+    else:
+        for row in hits:
+            print(_render_hit(row))
+    return 0
+
+
+def cmd_show(env: Env, args: argparse.Namespace) -> int:
+    conn = store.connect(_db_path(env))
+    try:
+        row = store.get_message(conn, args.id)
+    finally:
+        conn.close()
+
+    if row is None:
+        print(f"mail: no message with id {args.id!r}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(row, indent=2))
+        return 0
+
+    print(f"Id:        {row['id']}")
+    print(f"Date:      {row['date_iso']}")
+    print(f"From:      {row['from_name']} <{row['from_addr']}>")
+    print(f"To:        {row['to_addrs']}")
+    if row["cc_addrs"]:
+        print(f"Cc:        {row['cc_addrs']}")
+    print(f"Subject:   {row['subject']}")
+    if row["has_attachments"]:
+        print(f"Attachments: {row['attachments_json']}")
+    print()
+    print(row["body_text"])
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mail")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
     subparsers.add_parser("status", help="print env, DB path, and message counts")
+
+    search_parser = subparsers.add_parser("search", help="search the archive")
+    search_parser.add_argument("query")
+    search_parser.add_argument("--mode", default="fts", choices=["fts", "vec", "hybrid"])
+    search_parser.add_argument("--from", dest="from_", default=None)
+    search_parser.add_argument("--since", default=None, help="YYYY-MM or YYYY-MM-DD")
+    search_parser.add_argument("--until", default=None, help="YYYY-MM or YYYY-MM-DD")
+    search_parser.add_argument("--limit", type=int, default=search_mod.DEFAULT_LIMIT)
+    search_parser.add_argument("--json", action="store_true")
+
+    show_parser = subparsers.add_parser("show", help="show one message")
+    show_parser.add_argument("id")
+    show_parser.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -60,6 +139,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "status":
         return cmd_status(env, config)
+    if args.command == "search":
+        return cmd_search(env, args)
+    if args.command == "show":
+        return cmd_show(env, args)
 
     parser.error(f"unknown command: {args.command}")
     return 2

@@ -81,3 +81,21 @@ def make_message(id: str, **overrides) -> dict:
 @pytest.fixture
 def message_factory():
     return make_message
+
+
+def ingest_fixture(conn, path: Path, id: str, **overrides) -> dict:
+    """Extract a real .eml fixture and store it, filling in the Gmail-side fields
+    (id, thread_id, internal_date, ...) that only gmail.py (stage 3) supplies for real.
+    """
+    from src.mail import extract, store
+
+    fields = extract.build_message_fields(path.read_bytes())
+    message = make_message(id, **fields)
+    message.update(overrides)
+    store.upsert_message(conn, message)
+    return message
+
+
+@pytest.fixture
+def fixture_ingester():
+    return ingest_fixture

@@ -93,3 +93,45 @@ a shape invented two stages early.
 (created by this session, which runs as the owner) — stage 8's bootstrap reassigns it
 to `life-agent:life-agent` once that user exists. Nothing writes real data into it yet;
 stages 3-7 do.
+
+## Stage 4 — text extraction + full-text search
+
+**Done** (built ahead of stage 3, per the plan's stated order — extraction and search
+only need raw RFC 822 bytes, not a live Gmail connection).
+
+- `src/mail/extract.py`: `build_message_fields(raw_bytes)` parses with
+  `email.policy.default` (which does RFC 2047 header decoding for free — no bespoke
+  decoding code needed) and returns the header/body columns `store.py` wants. Body
+  prefers `text/plain`; falls back to HTML converted to text via BeautifulSoup with
+  `<script>`/`<style>`/`<img>` stripped (removing images removes tracking pixels as a
+  side effect — v1 doesn't download or display images at all) while anchor text
+  survives naturally. Attachments are recorded as filename/mimetype/size only, content
+  never touched.
+- `src/mail/search.py`: `search_fts()` — FTS5 `bm25()` with subject weighted 5x over
+  `from_addr`/`body_text`; `--from` (substring on `from_addr`), `--since`/`--until`
+  (`YYYY-MM` or `YYYY-MM-DD`, `since` inclusive, `until` exclusive of the day/month
+  after); excludes soft-deleted rows. `search()` dispatches on `mode`, raising a clear
+  `SearchError` for `vec`/`hybrid` until stage 5 exists.
+- `cli.py` gained `mail search QUERY [--mode] [--from] [--since] [--until] [--limit]
+  [--json]` and `mail show ID [--json]`.
+- Fixed a fixture bug the new extraction tests caught: `002-html-only-newsletter.eml`
+  wasn't actually HTML-only — it had a `multipart/alternative` plain-text fallback from
+  using `add_alternative()`, so extraction correctly preferred the plain part and the
+  "HTML-only" test failed for the right reason. Rebuilt it as a genuine single-part
+  `text/html` message.
+
+**Verified:**
+- `uv run pytest` — 58 passed. New: 10 extraction tests (plain, HTML→text with
+  scripts/images stripped and link text kept, multipart/alternative preference, German
+  umlauts round-trip, RFC 2047 subject + display name decoded exactly, attachment
+  metadata with no content, headers/reply-chain, Cc/Reply-To, the injection fixture's
+  text extracted as inert data); 11 search tests (subject match, umlaut body match,
+  subject-outranks-body ranking, `--from`, `--since`/`--until` at month granularity,
+  `--limit`, deleted rows excluded, mode dispatch, invalid date filter); 7 new CLI tests
+  for `search`/`show` (hit rendering, no-results, `--json`, unavailable mode, missing
+  id).
+
+**Left for stage 3:** nothing in `extract.py`/`search.py` depends on it, by design —
+stage 3 will call `extract.build_message_fields()` per Gmail message and add the
+Gmail-only columns (`id`, `thread_id`, `history_id`, `internal_date`, `labels_json`,
+`size`, `is_from_owner`, `fetched_at`) before `store.upsert_message()`.

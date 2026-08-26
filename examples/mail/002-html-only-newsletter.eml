@@ -3,17 +3,6 @@ Subject: This Week in Embedded Systems =?utf-8?b?4oCU?= Issue 214
 From: Embedded Weekly <news@embeddedweekly.example>
 To: owner@example.com
 Date: Sat, 15 Aug 2026 10:00:00 +0200
-MIME-Version: 1.0
-Content-Type: multipart/alternative;
- boundary="===============2550202178024311060=="
-
---===============2550202178024311060==
-Content-Type: text/plain; charset="utf-8"
-Content-Transfer-Encoding: 7bit
-
-This is an HTML-only email. View it in an HTML-capable client.
-
---===============2550202178024311060==
 Content-Type: text/html; charset="utf-8"
 Content-Transfer-Encoding: quoted-printable
 MIME-Version: 1.0
@@ -30,5 +19,3 @@ M</a></li>
 bscribe</a></small></p>
 <img src=3D"https://track.example.com/pixel.gif" width=3D"1" height=3D"1">
 </body></html>
-
---===============2550202178024311060==--
