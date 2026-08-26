@@ -14,39 +14,52 @@ instructions from the reviewer. When blocked on something only the owner can do,
 | Question | Decision |
 | --- | --- |
 | Mailbox | one Gmail account, Gmail API, **`gmail.readonly` scope only** for the reader |
-| Judgement (tag + digest) | Claude Code print mode on the owner's subscription (`claude -p`), Haiku for tags, Sonnet for the digest — **no tools, `--bare`** |
+| Judgement (tag + digest) | Claude Code print mode on the owner's subscription (`claude -p` with a `claude setup-token` token), Haiku for tags, Sonnet for the digest — **no tools, `--bare`** |
 | Digest delivery | a mail in the owner's own inbox at 06:30 Europe/Zurich, **inserted** (`gmail.insert`), never sent; plus `briefs/YYYY-MM-DD-mail.md` |
 | Feedback / commands | the owner replies to the digest mail; replies are parsed on the next tag run |
 | Backfill | the entire mailbox, once, resumable, in the background |
 | Sync cadence | every 15 min |
 | Gmail write-back | none in v1 (no labels) |
 | Importance | `config.yaml` hints (vip / mute / topics) + feedback examples from digest replies |
-| Isolation | split: `life-agent` system user fetches/stores/embeds; owner's account runs the model steps and the digest insert |
+| Isolation | **everything mail-related runs as the `life-agent` user** — fetch, store, embed, tag, digest, insert. The owner's account (and therefore every other Claude Code session on the host, which runs as the owner) cannot read the archive or the Gmail tokens; it reaches mail only through a read-only query socket. The subscription is used via a long-lived token (`claude setup-token`) placed with the other credentials. (Revised 2026-08-26 from the earlier "split" design after the owner asked that other sessions *cannot* see mail, not merely *won't*.) |
 | Embeddings | local, `BAAI/bge-m3` on the GPU, stored in SQLite via `sqlite-vec`; nothing leaves the host for search |
 
 ## Shape
 
 ```
-  Gmail ──readonly──▶ mail-sync (user: life-agent, */15)  ──▶  $LIFE_AGENT_STATE/mail.db
-                        fetch · extract text · embed (GPU)        (outside every git repo)
-                                                                        │ group rw
-  Claude Code -p ◀── mail-tag (user: owner, */15 +5)  ◀────────────────┤  tags, feedback
-  (haiku, no tools)      new mail only · parse digest replies           │
-  Claude Code -p ◀── mail-digest (user: owner, 06:30 CH) ◀─────────────┘
-  (sonnet, no tools)     briefs/DATE-mail.md  +  gmail.insert into own inbox
-                     deadman (owner, 08:00 CH): file exists?  else ntfy
-                     publish (owner, 07:30 CH): gitleaks, push data repo
+  ── all of this runs as user life-agent ─────────────────────────────────────────────
+  Gmail ──readonly──▶ mail-sync (*/15)  ──▶  $LIFE_AGENT_STATE/mail.db   (0700 life-agent,
+                        fetch · extract text · embed (GPU)                 outside every git repo)
+  Claude Code -p ◀── mail-tag (*/15 +5)  ◀── new mail only · parse digest replies
+  (haiku, no tools, CLAUDE_CODE_OAUTH_TOKEN)
+  Claude Code -p ◀── mail-digest (06:30 CH) ──▶ briefs/DATE-mail.md  +  gmail.insert into own inbox
+  (sonnet, no tools)
+  mail-query.service ──▶ unix socket, read-only: search / show / status
+  ────────────────────────────────────────────────────────────────────────────────────
+  owner (and any Claude session running as the owner):
+      `mail search …` / MCP  ──▶ socket only.  Cannot open mail.db or any token.
+      deadman (08:00 CH): briefs file exists?  else ntfy
+      publish (07:30 CH): gitleaks, push data repo
 ```
 
 Three state locations, all outside this public repo:
 
 | Location | In git? | Owner : group, mode | Contents |
 | --- | --- | --- | --- |
-| `$LIFE_AGENT_STATE/` | **no** | owner : life-agent, `2770` | `mail.db` (+wal/shm), `models/` (HF cache), `claude-cwd/` (empty dir used as cwd for `claude -p`) |
-| `$LIFE_AGENT_DATA/` | private repo | as today | `config.yaml` (owner rw, agent r), `briefs/` (digests), `mail-feedback.jsonl` |
-| `$LIFE_AGENT_CONF/` | no | owner, `700` | `google-client.json`, `gmail-readonly-token.json` (ACL r for life-agent), `gmail-insert-token.json` (owner only), `ntfy-topic` |
+| `$LIFE_AGENT_STATE/` | **no** | life-agent : life-agent, `0700` | `mail.db` (+wal/shm), `models/` (HF cache), `claude-cwd/` (empty dir used as cwd for `claude -p`). **No group or other access — the owner deliberately cannot read this without `sudo`.** |
+| `$LIFE_AGENT_DATA/` | private repo | as today | `config.yaml` (owner rw, agent r), `briefs/` (digests; agent writes, owner reads), `mail-feedback.jsonl` |
+| `$LIFE_AGENT_CONF/` | no | owner, `700`, ACL `x` for life-agent | `google-client.json` (owner), `gmail-readonly-token.json`, `gmail-insert-token.json`, `claude-oauth-token` — the three tokens are `0600` **owned by life-agent** after the owner creates them (bootstrap chowns), `ntfy-topic` (owner) |
+| `/run/life-agent/` | no | life-agent : life-agent, `0750` + owner in group | `mail.sock` — the only path from the owner's side into the archive |
 
 `LIFE_AGENT_STATE`, `LIFE_AGENT_DATA`, `LIFE_AGENT_CONF` have **no defaults**; refuse to start if unset.
+
+**Why this shape.** The host runs many Claude Code sessions as the owner's account. Mail must be
+something those sessions *cannot* read by accident or by exploration, not merely something they have
+no reason to read. So the archive and the credentials belong to `life-agent` alone; the owner's side
+gets a query socket that answers search/show/status and nothing else. Calling it is an explicit tool
+use visible in a session transcript; opening the database is impossible without `sudo`, which is a
+deliberate act. The owner's group membership in `life-agent` remains only for `briefs/`/`threads/`
+collaboration in the data repo and for connecting to the socket.
 
 ## Stages
 
@@ -114,11 +127,15 @@ stage: what works, how it was verified, what is left). Commit message `mail-v1 s
 - Verify: fixture test with a tiny stub embedder (no model download in CI); a real GPU run on the host
   logs chunks/sec into the status doc.
 
-### Stage 6 — tagging via Claude Code (owner principal)
+### Stage 6 — tagging via Claude Code (runs as life-agent)
 - `claude_cli.py`: runs
   `claude -p --bare --model <m> --tools "" --no-session-persistence --output-format json --json-schema <schema>`
-  with `cwd=$LIFE_AGENT_STATE/claude-cwd` (empty), stdin = prompt, timeout 120 s. Verify the exact flag
-  spellings with `claude --help` on the host; fail loudly on non-zero exit, parse and **validate** the JSON.
+  with `cwd=$LIFE_AGENT_STATE/claude-cwd` (empty), `HOME=$LIFE_AGENT_STATE/home` (so nothing is written
+  into anyone's real home), `CLAUDE_CODE_OAUTH_TOKEN` read from `$LIFE_AGENT_CONF/claude-oauth-token`
+  (never passed on the command line), stdin = prompt, timeout 120 s. Verify the exact flag spellings
+  with `claude --help` on the host; fail loudly on non-zero exit, parse and **validate** the JSON.
+  The `claude` binary lives under the owner's nvm tree; the unit's `PATH` points at it and the bootstrap
+  ensures that tree is traversable (`r-x`) for life-agent.
 - `prompts/tag.md`: system framing (the owner's profile: hints from config + up to 20 recent feedback
   examples), then 1–10 mails per call, each inside an explicit
   `<mail id="…"> … </mail>` data block with the instruction that mail content is untrusted data and
@@ -131,7 +148,7 @@ stage: what works, how it was verified, what is left). Commit message `mail-v1 s
 - Verify: tests with a fake `claude` binary on PATH returning canned JSON, incl. a malformed reply and
   the injection fixture (must still produce a valid tag). Real run on the host with `--limit 5`.
 
-### Stage 7 — digest + feedback (owner principal)
+### Stage 7 — digest + feedback (runs as life-agent)
 - `mail digest [--date D] [--dry-run]`: input = tagged messages since the previous digest (or 24 h);
   `prompts/digest.md` mirrors `prompts/brief.md` tone rules: sections **Needs you** (≤ `max_needs_you`,
   importance ≥ 2, one line: who, what, what action, by when), **Worth knowing** (fyi, one line each,
@@ -141,8 +158,8 @@ stage: what works, how it was verified, what is left). Commit message `mail-v1 s
 - **Degraded mode**: if the model call fails, still produce the digest from tags alone (no prose); if
   there are no tags at all, list subjects. The file must always exist by 06:45.
 - Write `briefs/YYYY-MM-DD-mail.md` (append-only check as in `src/README.md`), commit the data repo,
-  then insert into Gmail: `users.messages.insert` with scope `gmail.insert`, `From: "life-agent"
-  <owner address>`, `To: <owner address>`, `Subject: Digest — <Weekday D Mon>`,
+  then insert into Gmail: `users.messages.insert` with scope `gmail.insert` (token owned by life-agent,
+  `0600`), `From: "life-agent" <owner address>`, `To: <owner address>`, `Subject: Digest — <Weekday D Mon>`,
   `Message-ID: <digest-YYYYMMDD-<16 random hex>@life-agent>`, `labelIds=[INBOX, UNREAD]`, text +
   simple HTML. The recipient is a constant in code, never model output.
 - `mail feedback`: find messages from the owner whose `In-Reply-To`/`References` match a stored digest
@@ -152,32 +169,63 @@ stage: what works, how it was verified, what is left). Commit message `mail-v1 s
   Runs at the end of every `mail tag`.
 - Verify: fixture tests for parsing and degraded mode; one real `--dry-run` on the host.
 
-### Stage 8 — install: users, permissions, timers
-- Extend `setup/bootstrap.sh` (still dry-run by default): also create `$LIFE_AGENT_STATE` (`2770`,
-  owner:life-agent), grant traverse-only ACL on the owner's home (`setfacl -m u:life-agent:x $HOME`)
-  since the code dir lives inside it, ACL `r` on `gmail-readonly-token.json` only, `umask 002` notes.
-- System unit (needs sudo, installed by owner): `life-agent-mail-sync.service/.timer`, `User=life-agent`,
-  `OnCalendar=*:0/15`, `RandomizedDelaySec=60`, `ExecStart=<code>/.venv/bin/python -m src.mail.cli sync
-  --budget 600`, hardening as in the existing template **minus** `MemoryDenyWriteExecute` (breaks CUDA)
-  and with `ReadWritePaths=$LIFE_AGENT_STATE`. If CUDA fails under the sandbox, relax one directive at a
-  time and record which in the status doc.
-- Owner **user** units (`~/.config/systemd/user/`, linger is enabled, no sudo): `life-agent-mail-tag`
-  (`OnCalendar=*:5/15`), `life-agent-mail-digest` (`OnCalendar=*-*-* 06:30:00 Europe/Zurich`,
-  `Persistent=true`), `life-agent-deadman` (`08:00 Europe/Zurich`, checks `briefs/<today>-mail.md`
-  non-empty, else POSTs the fixed string to ntfy), `life-agent-publish` (`07:30 Europe/Zurich`,
-  gitleaks if present on PATH — install to `~/.local/bin` — then push). Units set `PATH` to include the
-  nvm `claude` binary and `HOME` explicitly. Templates use the existing `__PLACEHOLDER__` convention.
-- Verify: run the boundary checks from `setup/README.md` plus `sudo -u life-agent <code>/.venv/bin/python
-  -m src.mail.cli status`; `systemctl list-timers` shows all five; one full cycle observed in the journal.
+### Stage 7b — query socket (runs as life-agent)
+- `mail serve`: a tiny HTTP-over-unix-socket server (stdlib `http.server` + `socketserver.UnixStreamServer`,
+  no framework) at `/run/life-agent/mail.sock`, socket mode `0660`, group `life-agent`. Endpoints, all
+  GET, all read-only: `/status`, `/search?q=&mode=&from=&since=&until=&limit=`, `/show?id=`. Returns JSON;
+  `show` returns headers + body text of one message. No endpoint lists the whole archive; `limit` is capped
+  at 50. The server opens the DB read-only (`mode=ro` URI).
+- The owner-side `mail search` / `mail show` / `mail status` detect that the DB is not readable and use
+  the socket instead (same output). The `mail` CLI therefore works for both principals.
+- Verify: tests start the server on a temp socket and query it; a test asserts that the server refuses
+  any non-GET method and unknown paths.
+
+### Stage 8 — install: user, permissions, timers
+- Extend `setup/bootstrap.sh` (still dry-run by default):
+  - create `life-agent` as a system user **with a home** (`--home-dir /var/lib/life-agent --create-home`,
+    `0700`) — `claude -p` and the HF cache need a writable `HOME`; the plan uses `$LIFE_AGENT_STATE/home`
+    for Claude's state, but the account still needs a real home directory;
+  - create `$LIFE_AGENT_STATE` (`0700`, life-agent:life-agent) and `/run/life-agent` via a
+    `tmpfiles.d` entry (`d /run/life-agent 0750 life-agent life-agent`);
+  - traverse-only ACLs (`x`) for life-agent on the owner's home, on `$LIFE_AGENT_CONF`, and along the
+    nvm path to the `claude` binary (the code dir and nvm tree are `r-x` for others already);
+  - `chown life-agent:life-agent` + `chmod 0600` on the three token files if present; print the exact
+    commands to create them if absent;
+  - keep the owner in group `life-agent` (needed for `briefs/`, `threads/`, and the socket) — but note in
+    the script header that **`$LIFE_AGENT_STATE` has no group bits, so membership grants nothing there**.
+- System units (need sudo, installed by owner), all `User=life-agent`, `Group=life-agent`,
+  `UMask=0077`, `Environment=HOME=/var/lib/life-agent LIFE_AGENT_*=…`, `PATH` including the nvm bin dir,
+  hardening as in the existing template **minus** `MemoryDenyWriteExecute` (breaks CUDA) and with
+  `ReadWritePaths=$LIFE_AGENT_STATE $LIFE_AGENT_DATA/briefs /run/life-agent`:
+  - `life-agent-mail-sync` — `OnCalendar=*:0/15`, `RandomizedDelaySec=60`, `sync --budget 600`
+  - `life-agent-mail-tag` — `OnCalendar=*:5/15`, `tag && feedback`
+  - `life-agent-mail-digest` — `OnCalendar=*-*-* 06:30:00 Europe/Zurich`, `Persistent=true`
+  - `life-agent-mail-query` — `Type=simple`, always on, `Restart=on-failure`, `mail serve`
+  If CUDA fails under the sandbox, relax one directive at a time and record which in the status doc.
+- Owner **user** units (`~/.config/systemd/user/`, linger is enabled, no sudo): `life-agent-deadman`
+  (`08:00 Europe/Zurich`, checks `briefs/<today>-mail.md` non-empty, else POSTs the fixed string to ntfy)
+  and `life-agent-publish` (`07:30 Europe/Zurich`, gitleaks if present on PATH — install to
+  `~/.local/bin` — then push). Templates use the existing `__PLACEHOLDER__` convention.
+- Verify — every line is a claim in the trust model, so every line is a command:
+  `sudo -l -U life-agent` (no sudo); `cat $LIFE_AGENT_STATE/mail.db` as owner → permission denied;
+  `cat $LIFE_AGENT_CONF/gmail-readonly-token.json` as owner → permission denied;
+  `sudo -u life-agent touch ~/life-agent/x` → denied; `mail status` as owner → answers via socket;
+  `systemctl list-timers 'life-agent-*'` shows three system timers + two user timers; `mail-query` active;
+  one full sync → tag → digest cycle observed in the journal.
 
 ### Stage 9 — documentation + handoff
-- `docs/trust-model.md`: add principals **Tagger** (owner account via user timer; Claude Code print mode,
-  no tools, `--bare`) and the `gmail.insert` capability (owner only, recipient constant in code; the scope
-  cannot send). Add the mail-specific soft boundaries and the **prompt-injection** section the README
+- `docs/trust-model.md`: the agent's capability table gains Gmail readonly, Gmail insert (recipient
+  constant in code; the scope cannot send), the subscription token (used only by `claude -p` with no
+  tools), and the query socket. Add a new prohibition with **kernel** enforcement: *the owner's account
+  — and therefore every other Claude Code session on the host — cannot read the mail archive or any
+  token* (`0700` state dir, `0600` tokens owned by life-agent; verify with `namei -l` and a failing
+  `cat`). Add the mail-specific soft boundaries and the **prompt-injection** section the README
   promised: the model in the mail path has no tools and no ability to act; its output is schema-validated;
   the worst case is a wrong tag or a misleading one-line summary; feedback is accepted only from the
   owner's address in reply to a digest Message-ID the system generated; v2 drafting will require an
-  explicit owner instruction and produce drafts only.
+  explicit owner instruction and produce drafts only. State honestly that the query socket *is* readable
+  by any process running as the owner — that is the intended interface, it is explicit, and it returns
+  search results, not the store.
 - `docs/egress.md`: new ledger rows — Gmail API reads (readonly); HuggingFace model download (once);
   Anthropic via Claude Code (tag: headers + truncated body of *new* mail only; digest: summaries);
   Gmail insert (digest, to self); ntfy on failure only. Note that the archive itself never leaves the host
@@ -190,17 +238,22 @@ stage: what works, how it was verified, what is left). Commit message `mail-v1 s
   archive with `mail sync --full`, read the journal).
 
 ### Stage 10 (optional, after 1–9 are green) — MCP server
-- `mail mcp` (stdio) exposing `search`, `show`, `status` read-only, so any Claude Code session on the
-  host can query the archive. Register in the owner's `~/.claude.json` as `life-agent-mail`.
+- `mail mcp` (stdio, runs as the owner) exposing `search`, `show`, `status` — a thin wrapper over the
+  query socket, so any Claude Code session on the host can query the archive *through the socket only*.
+  Register in the owner's `~/.claude.json` as `life-agent-mail`. Do not register it in project settings
+  of unrelated repos; sessions that want mail opt in.
 
 ## Owner items (surface with `NEED-MARCEL:` as soon as a stage needs them)
 
 1. Google Cloud: project → enable Gmail API → OAuth consent screen (External; add the scopes
    `gmail.readonly` and `gmail.insert`; **publish to Production**) → OAuth client, type *Desktop app* →
    download JSON to `$LIFE_AGENT_CONF/google-client.json`, mode `0600`.
-2. `sudo ./setup/bootstrap.sh --apply`, then install the one system unit (commands printed by the script).
-3. `mail auth readonly` and `mail auth insert` from a PC with `ssh -L 8765:localhost:8765`.
-4. `mail.address` and `tag_since` in `config.yaml`; optional `ntfy-topic`.
+2. `claude setup-token` on the host as the owner → paste the token into
+   `$LIFE_AGENT_CONF/claude-oauth-token` (`0600`). Bootstrap chowns it to life-agent.
+3. `sudo ./setup/bootstrap.sh --apply`, then install the system units (commands printed by the script).
+4. `mail auth readonly` and `mail auth insert` from a PC with `ssh -L 8765:localhost:8765` (run as the
+   owner; bootstrap — or the printed `chown` — hands the resulting token files to life-agent).
+5. `mail.address` and `tag_since` in `config.yaml`; optional `ntfy-topic`.
 
 ## Non-goals for v1
 Labels or any other write to the mailbox; downloading attachments; replying or drafting; a second
