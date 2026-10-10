@@ -18,6 +18,12 @@ import sqlite_vec
 
 EMBEDDING_DIMENSIONS = 1024
 
+# Sync and embed are separate units that can write at the same time. WAL lets readers
+# and one writer coexist; a writer that finds the write lock held waits this long
+# instead of failing with "database is locked". Both sides commit per batch/message,
+# so a real wait is a fraction of a second.
+BUSY_TIMEOUT_SECONDS = 60
+
 _SCHEMA_V1 = f"""
 CREATE TABLE messages (
     id TEXT PRIMARY KEY,
@@ -183,8 +189,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_SECONDS * 1000}")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
 

@@ -1,0 +1,56 @@
+[Unit]
+Description=life-agent: embed mail that has no vectors yet (CPU-friendly, low priority)
+After=network-online.target
+Wants=network-online.target
+
+# TEMPLATE — substitute __CODE_DIR__, __DATA_DIR__, __CONF_DIR__ and __STATE_DIR__
+# before installing. See setup/README.md.
+# This repo deliberately contains no path to a real installation.
+#
+# Embedding is its own job (docs/plans/mail-personal-v1.md stage 2) so that on a
+# CPU-only host it can never hold up the 15-minute sync, which runs with --no-embed.
+# A run stops after its budget; every message it finished is committed, and the next
+# hourly run picks up at the next un-embedded message. Network is needed only for the
+# one-time BAAI/bge-m3 download (docs/egress.md row 6).
+
+[Service]
+Type=oneshot
+User=life-agent
+Group=life-agent
+UMask=0077
+WorkingDirectory=__CODE_DIR__
+Environment=HOME=/var/lib/life-agent
+Environment=LIFE_AGENT_DATA=__DATA_DIR__
+Environment=LIFE_AGENT_CONF=__CONF_DIR__
+Environment=LIFE_AGENT_STATE=__STATE_DIR__
+Environment=PATH=/usr/bin:/bin:__CODE_DIR__/.venv/bin
+ExecStart=__CODE_DIR__/.venv/bin/python -m src.mail.cli embed --budget 2700
+
+# Background priority: the sync, the query socket and anything interactive on the host
+# come first. MemoryMax kills only this run on a runaway; sync is a separate unit and
+# unaffected (docs/failure-modes.md).
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=20
+MemoryMax=3500M
+
+# Same hardening as life-agent-mail-sync.service, minus the token path (embedding
+# never talks to Gmail). MemoryDenyWriteExecute is deliberately OMITTED: torch's CPU
+# path uses oneDNN, which generates kernels at runtime (and CUDA breaks under it too).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__STATE_DIR__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# The budget is 45 min; leave room for model load before it starts counting.
+TimeoutStartSec=55min

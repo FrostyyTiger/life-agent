@@ -420,3 +420,73 @@ def test_status_reports_unavailable_when_neither_local_nor_socket_work(env_dirs,
 
     assert exit_code == 0
     assert "unavailable" in capsys.readouterr().out
+
+
+def _fake_sync_env(monkeypatch):
+    from src.mail import gmail
+
+    monkeypatch.setattr(gmail, "load_credentials", lambda conf_dir, filename: object())
+    monkeypatch.setattr(gmail, "build_service", lambda credentials: object())
+    monkeypatch.setattr(gmail, "RealGmailPort", lambda service: object())
+    monkeypatch.setattr(
+        gmail, "sync",
+        lambda conn, port, config, budget_seconds=None, raw_dir=None: gmail.SyncResult(
+            fetched=0, mode="incremental", done=True
+        ),
+    )
+
+
+def test_sync_no_embed_never_builds_the_embedder(env_dirs, capsys, message_factory,
+                                                  monkeypatch):
+    _fake_sync_env(monkeypatch)
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    store.upsert_message(conn, message_factory("m1"))
+    conn.close()
+
+    def no_embedder(env):
+        raise AssertionError("--no-embed must not load the model")
+
+    monkeypatch.setattr(cli, "_build_embedder", no_embedder)
+    assert cli.main(["sync", "--no-embed"]) == 0
+    assert "embedded=skipped" in capsys.readouterr().out
+
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0
+    conn.close()
+
+
+def test_sync_without_no_embed_still_embeds(env_dirs, capsys, message_factory, monkeypatch):
+    from tests.mail.fake_embedder import FakeEmbedder
+
+    _fake_sync_env(monkeypatch)
+    monkeypatch.setattr(cli, "_build_embedder", lambda env: FakeEmbedder())
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    store.upsert_message(conn, message_factory("m1"))
+    conn.close()
+
+    assert cli.main(["sync"]) == 0
+    assert "embedded=1" in capsys.readouterr().out
+
+
+def test_installed_units_split_sync_and_embed():
+    systemd = Path(__file__).resolve().parent.parent.parent / "setup" / "systemd"
+    sync_unit = (systemd / "life-agent-mail-sync.service").read_text()
+    embed_unit = (systemd / "life-agent-mail-embed.service").read_text()
+    embed_timer = (systemd / "life-agent-mail-embed.timer").read_text()
+
+    assert "cli sync --budget 600 --no-embed" in sync_unit
+    assert "cli embed --budget 2700" in embed_unit
+    for setting in ("Nice=19", "IOSchedulingClass=idle", "CPUWeight=20", "MemoryMax=3500M"):
+        assert f"\n{setting}\n" in embed_unit
+    assert "\nMemoryDenyWriteExecute" not in embed_unit
+    assert "OnCalendar=hourly" in embed_timer and "Persistent=true" in embed_timer
+
+    def hardening(unit):
+        keys = ("NoNewPrivileges", "PrivateTmp", "ProtectSystem", "ProtectHome",
+                "ProtectKernelTunables", "ProtectKernelModules", "ProtectControlGroups",
+                "RestrictNamespaces", "RestrictSUIDSGID", "LockPersonality",
+                "SystemCallFilter", "SystemCallErrorNumber", "RestrictAddressFamilies",
+                "User", "Group", "UMask")
+        return {line for line in unit.splitlines() if line.split("=", 1)[0] in keys}
+
+    assert hardening(embed_unit) == hardening(sync_unit)

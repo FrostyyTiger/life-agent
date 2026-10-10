@@ -348,17 +348,20 @@ def cmd_sync(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
         result = gmail.sync(conn, port, config, budget_seconds=args.budget,
                             raw_dir=_raw_dir(env))
 
-        embed_budget = None
-        if args.budget is not None:
-            embed_budget = max(0.0, args.budget - (time.monotonic() - start))
-        embedder = _build_embedder(env)
-        processed = embed_mod.embed_pending(conn, embedder, budget_seconds=embed_budget)
+        processed = None
+        if not args.no_embed:
+            embed_budget = None
+            if args.budget is not None:
+                embed_budget = max(0.0, args.budget - (time.monotonic() - start))
+            embedder = _build_embedder(env)
+            processed = embed_mod.embed_pending(conn, embedder, budget_seconds=embed_budget)
     finally:
         conn.close()
 
+    embedded = "skipped" if processed is None else processed
     print(
         f"sync: mode={result.mode} fetched={result.fetched} done={result.done} "
-        f"embedded={processed}"
+        f"embedded={embedded}"
     )
     return 0
 
@@ -403,6 +406,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--budget", type=float, default=None, help="seconds")
     sync_parser.add_argument("--full", action="store_true",
                               help="reset sync state and re-run a full backfill/rebuild")
+    sync_parser.add_argument("--no-embed", action="store_true",
+                              help="fetch only; leave embedding to `mail embed` (its own timer)")
 
     embed_parser = subparsers.add_parser("embed", help="embed messages that have no chunks yet")
     embed_parser.add_argument("--budget", type=float, default=None, help="seconds")

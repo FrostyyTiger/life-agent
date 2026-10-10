@@ -16,7 +16,7 @@ repository less believable, so the accounting is stated plainly.
 | 3 | Calendar API request | Google | Daily, ~07:00 | Scheduled brief job | Read-only query against one calendar id. Google already has this data. |
 | 4 | A fixed string: *"No brief for YYYY-MM-DD"* (now checks the mail digest — see [mail-v1](plans/mail-v1.md) stage 8) | ntfy.sh | Only on failure | Dead-man's switch at 08:00 | **No personal data.** A date and the fact that a file is missing. |
 | 5 | Gmail API reads | Google | Every 15 min; on demand for `mail verify` / `mail backfill-raw` | mail-sync timer, or the owner by hand | Read-only (`gmail.readonly`) query against your own inbox. Google already has this data. |
-| 6 | `BAAI/bge-m3` model weights | Hugging Face | Once (first `mail embed` run) | mail-sync/embed | **No personal data.** A public model's weights, not your data. |
+| 6 | `BAAI/bge-m3` model weights | Hugging Face | Once (first `mail embed` run) | mail-embed timer (or `mail sync` without `--no-embed`) | **No personal data.** A public model's weights, not your data. |
 | 7 | Headers + truncated body of *new* mail only | Anthropic API | Every 15 min | mail-tag timer | **Yes — personal.** Whatever's in the mail, truncated to `config.mail.body_chars_for_model`. |
 | 8 | Tagged-mail summaries (not raw bodies) | Anthropic API | Daily, 06:30 | mail-digest timer | **Yes — personal**, but already-summarized by row 7's pass, not the raw mail again. |
 | 9 | The composed digest | Google (`gmail.insert`, to your own inbox) | Daily, 06:30 | mail-digest timer | **Yes — personal**, but it's a summary of your own mail being written back to your own mailbox — the scope cannot send it, or write, anywhere else. |
