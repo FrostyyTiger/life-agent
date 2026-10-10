@@ -26,12 +26,16 @@ third-party dependencies that phone home, and the agent holds no credential for 
 destination other than rows 1, 5-9's endpoints (calendar brief and mail-v1
 respectively — two separate credential sets, held by the same `life-agent` identity).
 
-The mail **archive itself** (`mail.db`, embeddings, chunk text) never leaves the host and
+The mail **archive itself** (`mail.db`, embeddings, chunk text, and the original message
+bytes under `raw/<YYYY>/<MM>/<gmail-id>.eml.gz`) never leaves the host and
 is not part of either git repo — it lives in `$LIFE_AGENT_STATE`, outside every
 repository, exactly like credentials live outside every repository (see
 `trust-model.md`'s boundary diagram). Only what rows 5-9 describe ever crosses the
 machine boundary; a search or `show` over the query socket answers locally and sends
-nothing anywhere.
+nothing anywhere. The raw `.eml.gz` copies ([mail-personal-v1](plans/mail-personal-v1.md)
+stage 1) are local storage only: they are written from the same row-5 Gmail read that
+fills `mail.db`, add no new request and no new destination, and leave the host only
+inside the host's own disk backup, the same as `mail.db`.
 
 ## Row 1 — the model API
 

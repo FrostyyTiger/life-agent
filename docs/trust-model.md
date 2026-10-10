@@ -148,7 +148,9 @@ life-agent-notes/    you: rw    agent: ---    ← design thinking; agent has no 
                      you: ---   agent: rw     ← the three mail tokens: owned by
                                                  life-agent once bootstrap chowns them —
                                                  you lose direct read access to these
-$LIFE_AGENT_STATE     you: ---   agent: rw     ← not a repo at all: mail.db + HF cache,
+$LIFE_AGENT_STATE     you: ---   agent: rw     ← not a repo at all: mail.db, raw/ (the
+                                                 original .eml.gz of every message, 0600
+                                                 files in 0700 dirs) + HF cache,
                                                  0700, no group bits — you reach it only
                                                  via the query socket (see Capabilities)
 ```

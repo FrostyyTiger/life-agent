@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from src.mail import extract, store
+from src.mail import extract, rawstore, store
 from src.mail.config import MailConfig
 
 READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -337,7 +337,12 @@ def _queue_ids(conn, ids) -> None:
     conn.commit()
 
 
-def _store_message(conn, config: MailConfig, raw_message: dict) -> None:
+def _store_message(conn, config: MailConfig, raw_message: dict, raw_dir: Path) -> None:
+    # The raw file goes first: a crash between the two leaves an archived file whose
+    # id is still in `pending`, so the next run stores the row. The other order could
+    # leave a row with no copy of the message behind it.
+    rawstore.write_raw(raw_dir, raw_message["id"], raw_message["internal_date"],
+                       raw_message["raw"])
     fields = extract.build_message_fields(raw_message["raw"])
     is_from_owner = fields["from_addr"].strip().lower() == config.address.strip().lower()
 
@@ -357,7 +362,8 @@ def _store_message(conn, config: MailConfig, raw_message: dict) -> None:
     store.upsert_message(conn, message)
 
 
-def _drain_pending(conn, port, config: MailConfig, deadline: float | None) -> int:
+def _drain_pending(conn, port, config: MailConfig, deadline: float | None,
+                   raw_dir: Path) -> int:
     fetched = 0
     while not _deadline_passed(deadline):
         rows = conn.execute(
@@ -371,7 +377,7 @@ def _drain_pending(conn, port, config: MailConfig, deadline: float | None) -> in
         for message_id in ids:
             raw = raw_messages.get(message_id)
             if raw is not None:
-                _store_message(conn, config, raw)
+                _store_message(conn, config, raw, raw_dir)
             # else: gone between listing and fetch (e.g. deleted) — drop from pending.
 
         conn.executemany("DELETE FROM pending WHERE id = ?", [(i,) for i in ids])
@@ -381,23 +387,27 @@ def _drain_pending(conn, port, config: MailConfig, deadline: float | None) -> in
     return fetched
 
 
-def sync(conn, port, config: MailConfig, budget_seconds: float | None = None) -> SyncResult:
+def sync(conn, port, config: MailConfig, budget_seconds: float | None = None,
+         raw_dir: Path | None = None) -> SyncResult:
+    """`raw_dir` defaults to `raw/` next to mail.db (rawstore.default_raw_dir)."""
     deadline = _make_deadline(budget_seconds)
     fetched = 0
+    if raw_dir is None:
+        raw_dir = rawstore.default_raw_dir(conn)
 
     if get_sync_state(conn, "backfill_complete") != "1":
         if get_sync_state(conn, "history_id") is None:
             set_sync_state(conn, "history_id", str(port.get_profile()["history_id"]))
             _queue_ids(conn, port.list_all_message_ids())
 
-        fetched += _drain_pending(conn, port, config, deadline)
+        fetched += _drain_pending(conn, port, config, deadline, raw_dir)
         pending_left = conn.execute("SELECT 1 FROM pending LIMIT 1").fetchone() is not None
         if not pending_left:
             set_sync_state(conn, "backfill_complete", "1")
         return SyncResult(fetched=fetched, mode="backfill", done=not pending_left)
 
     # Anything left in `pending` from a previous run that hit its budget.
-    fetched += _drain_pending(conn, port, config, deadline)
+    fetched += _drain_pending(conn, port, config, deadline, raw_dir)
     if _deadline_passed(deadline):
         return SyncResult(fetched=fetched, mode="incremental", done=False)
 
@@ -416,7 +426,7 @@ def sync(conn, port, config: MailConfig, budget_seconds: float | None = None) ->
         store.mark_deleted(conn, message_id, _now_iso())
 
     _queue_ids(conn, added)
-    fetched += _drain_pending(conn, port, config, deadline)
+    fetched += _drain_pending(conn, port, config, deadline, raw_dir)
 
     set_sync_state(
         conn, "history_id", str(new_history_id) if new_history_id is not None
