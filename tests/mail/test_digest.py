@@ -311,8 +311,14 @@ def test_git_commit_data_repo_missing_identity_fails_gracefully(tmp_path, capsys
     monkeypatch.setenv("HOME", str(empty_home))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_home / "no-such-gitconfig"))
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty_home / "no-such-gitconfig"))
-    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+                "EMAIL"):
         monkeypatch.delenv(var, raising=False)
+    # On a machine whose hostname is fully qualified, git would otherwise guess an
+    # identity (user@host.domain) and the commit would succeed.
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
 
     committed = digest.git_commit_data_repo(tmp_path, "should fail")
 

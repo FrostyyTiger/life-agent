@@ -20,6 +20,7 @@ from src.mail import serve as serve_mod
 from src.mail import socket_client
 from src.mail import store
 from src.mail import tag as tag_mod
+from src.mail import verify as verify_mod
 from src.mail.config import ConfigError, Env, MailConfig, load_config, load_env
 
 # The owner's only path into the archive once bootstrap (stage 8) locks mail.db down
@@ -36,25 +37,60 @@ def _models_dir(env: Env):
     return env.state_dir / "models"
 
 
+def _raw_dir(env: Env):
+    return env.state_dir / "raw"
+
+
 def _build_embedder(env: Env):
     return embed_mod.SentenceTransformerEmbedder(_models_dir(env))
 
 
+def _format_bytes(size: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size} B"
+
+
+def _archive_lines(counts: dict) -> list[str]:
+    """The archive counts (verify.archive_counts), from a local read or the socket. An
+    older query server answers with `messages` only; print what is there.
+    """
+    if "rows_live" not in counts:
+        return []
+    if counts.get("gmail_total") is None:
+        gmail_total = "unknown (no sync has recorded it yet)"
+    else:
+        gmail_total = f"{counts['gmail_total']} (at last sync, {counts.get('gmail_total_at')})"
+    return [
+        f"  gmail total:      {gmail_total}",
+        f"  rows:             {counts['rows_live']} live, {counts['rows_deleted']} deleted in "
+        "Gmail (kept)",
+        f"  raw files:        {counts['raw_files']}",
+        f"  pending fetch:    {counts['pending_fetch']}",
+        f"  not embedded:     {counts['unembedded']} (searchable by fts only until embedded)",
+        f"  disk:             {_format_bytes(counts['disk_bytes'])} (mail.db + raw/)",
+    ]
+
+
 def cmd_status(env: Env, config: MailConfig) -> int:
     db_path = _db_path(env)
+    counts: dict = {}
     try:
         existed_before = db_path.exists()
         conn = store.connect(db_path)
         try:
-            count = store.count_messages(conn)
+            counts = verify_mod.archive_counts(conn, _raw_dir(env), db_path)
         finally:
             conn.close()
-        count_str = str(count)
+        count_str = str(counts["messages"])
         if not existed_before:
             count_str += " (database just created — run `mail sync`)"
     except sqlite3.OperationalError:
         try:
-            count_str = f"{socket_client.get(SOCKET_PATH, '/status')['messages']} (via socket)"
+            counts = socket_client.get(SOCKET_PATH, "/status")
+            count_str = f"{counts['messages']} (via socket)"
         except socket_client.SocketQueryError as exc:
             count_str = f"unavailable — {exc}"
 
@@ -67,6 +103,7 @@ def cmd_status(env: Env, config: MailConfig) -> int:
         f"  mail.tag_since:   {config.tag_since.isoformat()}",
         f"  database:         {db_path}",
         f"  messages:         {count_str}",
+        *_archive_lines(counts),
     ]
     print("\n".join(lines))
     return 0
@@ -168,7 +205,50 @@ def cmd_auth(env: Env, args: argparse.Namespace) -> int:
     return 0
 
 
+def _mb(size: int) -> str:
+    return f"{size / 1024 / 1024:.0f} MB"
+
+
+def cmd_embed_measure(env: Env, n: int) -> int:
+    """`mail embed --measure N`: the numbers decision D1 needs. Commits nothing."""
+    rss_before = embed_mod.current_rss_bytes()
+    embedder = _build_embedder(env)
+    # What the query socket holds once a vec/hybrid search has loaded the model.
+    embedder.embed(["measure: one query, as the query service would encode it"])
+    rss_loaded = embed_mod.current_rss_bytes()
+    vram_loaded = embed_mod.peak_vram_bytes()
+
+    conn = store.connect(_db_path(env))
+    try:
+        result = embed_mod.measure(conn, embedder, n)
+    finally:
+        conn.rollback()
+        conn.close()
+    peak = embed_mod.peak_rss_bytes()
+    vram_peak = embed_mod.peak_vram_bytes()
+
+    hours = result["backlog_hours"]
+    print("\n".join([
+        "embed --measure (nothing committed)",
+        f"  messages:              {result['messages']} ({result['chunks']} chunks) "
+        f"in {result['seconds']:.1f} s",
+        f"  rate:                  {result['messages_per_minute']:.1f} messages/min",
+        f"  backlog:               {result['backlog']} un-embedded messages, "
+        + (f"~{hours:.1f} h of embed time at this rate" if hours is not None else "rate unknown"),
+        f"  RSS before model:      {_mb(rss_before)}",
+        f"  model loaded:          RSS {_mb(rss_loaded)}, VRAM "
+        + (_mb(vram_loaded) if vram_loaded is not None else "n/a (no CUDA)")
+        + " (what mail serve holds after its first vec/hybrid search)",
+        f"  peak RSS:              {_mb(peak)} (embed unit MemoryMax=4G)",
+        "  peak VRAM:             "
+        + (_mb(vram_peak) if vram_peak is not None else "n/a (no CUDA, CPU fallback)"),
+    ]))
+    return 0
+
+
 def cmd_embed(env: Env, args: argparse.Namespace) -> int:
+    if args.measure is not None:
+        return cmd_embed_measure(env, args.measure)
     embedder = _build_embedder(env)
     conn = store.connect(_db_path(env))
     try:
@@ -258,34 +338,73 @@ def cmd_digest(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_sync(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
+def _readonly_port(env: Env):
+    """The real Gmail port on the readonly token, or None after printing NEED-MARCEL."""
     try:
         credentials = gmail.load_credentials(env.conf_dir, gmail.READONLY_TOKEN_FILENAME)
     except gmail.GmailAuthError as exc:
         print(f"NEED-MARCEL: {exc}", file=sys.stderr)
-        return 2
+        return None
+    return gmail.RealGmailPort(gmail.build_service(credentials))
 
-    service = gmail.build_service(credentials)
-    port = gmail.RealGmailPort(service)
+
+def cmd_verify(env: Env) -> int:
+    port = _readonly_port(env)
+    if port is None:
+        return 2
+    conn = store.connect(_db_path(env))
+    try:
+        report = verify_mod.verify(conn, port, _raw_dir(env))
+    finally:
+        conn.close()
+    print(verify_mod.format_report(report))
+    return 0 if report.ok else 1
+
+
+def cmd_backfill_raw(env: Env, args: argparse.Namespace) -> int:
+    port = _readonly_port(env)
+    if port is None:
+        return 2
+    conn = store.connect(_db_path(env))
+    try:
+        result = verify_mod.backfill_raw(conn, port, _raw_dir(env), budget_seconds=args.budget)
+    finally:
+        conn.close()
+    print(f"backfill-raw: written={result.written} unrecoverable={len(result.unrecoverable)} "
+          f"remaining={result.remaining}")
+    for message_id in result.unrecoverable:
+        print(f"backfill-raw: Gmail no longer serves {message_id}; its row stays, with no "
+              "raw copy", file=sys.stderr)
+    return 0 if not result.unrecoverable and result.remaining == 0 else 1
+
+
+def cmd_sync(env: Env, config: MailConfig, args: argparse.Namespace) -> int:
+    port = _readonly_port(env)
+    if port is None:
+        return 2
 
     start = time.monotonic()
     conn = store.connect(_db_path(env))
     try:
         if args.full:
             gmail.reset_sync_state(conn)
-        result = gmail.sync(conn, port, config, budget_seconds=args.budget)
+        result = gmail.sync(conn, port, config, budget_seconds=args.budget,
+                            raw_dir=_raw_dir(env))
 
-        embed_budget = None
-        if args.budget is not None:
-            embed_budget = max(0.0, args.budget - (time.monotonic() - start))
-        embedder = _build_embedder(env)
-        processed = embed_mod.embed_pending(conn, embedder, budget_seconds=embed_budget)
+        processed = None
+        if not args.no_embed:
+            embed_budget = None
+            if args.budget is not None:
+                embed_budget = max(0.0, args.budget - (time.monotonic() - start))
+            embedder = _build_embedder(env)
+            processed = embed_mod.embed_pending(conn, embedder, budget_seconds=embed_budget)
     finally:
         conn.close()
 
+    embedded = "skipped" if processed is None else processed
     print(
         f"sync: mode={result.mode} fetched={result.fetched} done={result.done} "
-        f"embedded={processed}"
+        f"embedded={embedded}"
     )
     return 0
 
@@ -330,9 +449,26 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--budget", type=float, default=None, help="seconds")
     sync_parser.add_argument("--full", action="store_true",
                               help="reset sync state and re-run a full backfill/rebuild")
+    sync_parser.add_argument("--no-embed", action="store_true",
+                              help="fetch only; leave embedding to `mail embed` (its own timer)")
 
     embed_parser = subparsers.add_parser("embed", help="embed messages that have no chunks yet")
     embed_parser.add_argument("--budget", type=float, default=None, help="seconds")
+    embed_parser.add_argument(
+        "--measure", type=int, default=None, metavar="N",
+        help="embed the N newest messages into a scratch table, print messages/min and "
+             "RSS, commit nothing",
+    )
+
+    subparsers.add_parser(
+        "verify",
+        help="prove the archive is complete: Gmail vs. rows vs. raw files (exit 1 on a gap)",
+    )
+
+    backfill_raw_parser = subparsers.add_parser(
+        "backfill-raw", help="refetch raw messages for rows that have no raw file (repair)"
+    )
+    backfill_raw_parser.add_argument("--budget", type=float, default=None, help="seconds")
 
     tag_parser = subparsers.add_parser("tag", help="tag new messages via claude -p")
     tag_parser.add_argument("--limit", type=int, default=None)
@@ -379,6 +515,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_sync(env, config, args)
     if args.command == "embed":
         return cmd_embed(env, args)
+    if args.command == "verify":
+        return cmd_verify(env)
+    if args.command == "backfill-raw":
+        return cmd_backfill_raw(env, args)
     if args.command == "tag":
         return cmd_tag(env, config, args)
     if args.command == "feedback":

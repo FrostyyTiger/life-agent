@@ -18,13 +18,14 @@ Environment=LIFE_AGENT_DATA=__DATA_DIR__
 Environment=LIFE_AGENT_CONF=__CONF_DIR__
 Environment=LIFE_AGENT_STATE=__STATE_DIR__
 Environment=PATH=/usr/bin:/bin:__CODE_DIR__/.venv/bin:__CLAUDE_BIN_DIR__
-ExecStart=__CODE_DIR__/.venv/bin/python -m src.mail.cli sync --budget 600
+# --no-embed: embedding runs as its own low-priority unit, life-agent-mail-embed
+# (docs/plans/mail-personal-v1.md stage 2), so a slow CPU embed never delays the copy.
+ExecStart=__CODE_DIR__/.venv/bin/python -m src.mail.cli sync --budget 600 --no-embed
 
 # Defence in depth — the mail-specific state (mail.db, tokens) is what this run
 # actually depends on being locked down; these narrow the blast radius further.
-# MemoryDenyWriteExecute is deliberately OMITTED: it breaks CUDA (the embedding step
-# this same budget window may also drive via sync -> embed) on the mail-embed/mail-sync
-# path.
+# MemoryDenyWriteExecute is deliberately OMITTED: it breaks CUDA and torch's oneDNN
+# CPU kernels, and `sync` without --no-embed (run by hand) still embeds in-process.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

@@ -15,8 +15,8 @@ repository less believable, so the accounting is stated plainly.
 | 2 | Full contents of `threads/` and `briefs/` | GitHub (private repo) | Daily, after the brief | Publisher timer | **Yes — personal.** The complete record. |
 | 3 | Calendar API request | Google | Daily, ~07:00 | Scheduled brief job | Read-only query against one calendar id. Google already has this data. |
 | 4 | A fixed string: *"No brief for YYYY-MM-DD"* (now checks the mail digest — see [mail-v1](plans/mail-v1.md) stage 8) | ntfy.sh | Only on failure | Dead-man's switch at 08:00 | **No personal data.** A date and the fact that a file is missing. |
-| 5 | Gmail API reads | Google | Every 15 min | mail-sync timer | Read-only (`gmail.readonly`) query against your own inbox. Google already has this data. |
-| 6 | `BAAI/bge-m3` model weights | Hugging Face | Once (first `mail embed` run) | mail-sync/embed | **No personal data.** A public model's weights, not your data. |
+| 5 | Gmail API reads | Google | Every 15 min; on demand for `mail verify` / `mail backfill-raw` | mail-sync timer, or the owner by hand | Read-only (`gmail.readonly`) query against your own inbox. Google already has this data. |
+| 6 | `BAAI/bge-m3` model weights | Hugging Face | Once (first `mail embed` run) | mail-embed timer (or `mail sync` without `--no-embed`) | **No personal data.** A public model's weights, not your data. |
 | 7 | Headers + truncated body of *new* mail only | Anthropic API | Every 15 min | mail-tag timer | **Yes — personal.** Whatever's in the mail, truncated to `config.mail.body_chars_for_model`. |
 | 8 | Tagged-mail summaries (not raw bodies) | Anthropic API | Daily, 06:30 | mail-digest timer | **Yes — personal**, but already-summarized by row 7's pass, not the raw mail again. |
 | 9 | The composed digest | Google (`gmail.insert`, to your own inbox) | Daily, 06:30 | mail-digest timer | **Yes — personal**, but it's a summary of your own mail being written back to your own mailbox — the scope cannot send it, or write, anywhere else. |
@@ -26,12 +26,16 @@ third-party dependencies that phone home, and the agent holds no credential for 
 destination other than rows 1, 5-9's endpoints (calendar brief and mail-v1
 respectively — two separate credential sets, held by the same `life-agent` identity).
 
-The mail **archive itself** (`mail.db`, embeddings, chunk text) never leaves the host and
+The mail **archive itself** (`mail.db`, embeddings, chunk text, and the original message
+bytes under `raw/<YYYY>/<MM>/<gmail-id>.eml.gz`) never leaves the host and
 is not part of either git repo — it lives in `$LIFE_AGENT_STATE`, outside every
 repository, exactly like credentials live outside every repository (see
 `trust-model.md`'s boundary diagram). Only what rows 5-9 describe ever crosses the
 machine boundary; a search or `show` over the query socket answers locally and sends
-nothing anywhere.
+nothing anywhere. The raw `.eml.gz` copies ([mail-personal-v1](plans/mail-personal-v1.md)
+stage 1) are local storage only: they are written from the same row-5 Gmail read that
+fills `mail.db`, add no new request and no new destination, and leave the host only
+inside the host's own disk backup, the same as `mail.db`.
 
 ## Row 1 — the model API
 

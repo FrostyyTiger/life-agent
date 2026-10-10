@@ -32,7 +32,9 @@ def test_socket_mode_is_0660(running_server):
 
 def test_status_endpoint(running_server):
     payload = socket_client.get(running_server, "/status")
-    assert payload == {"messages": 1}
+    assert payload["messages"] == 1
+    assert (payload["rows_live"], payload["rows_deleted"]) == (1, 0)
+    assert payload["raw_files"] == 0  # the row was stored directly, not via sync
 
 
 def test_search_endpoint_returns_hits(running_server):
