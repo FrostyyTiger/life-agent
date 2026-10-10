@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from src.mail import extract, rawstore, store
+from src.mail import extract, rawstore, store, verify
 from src.mail.config import MailConfig
 
 READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -65,7 +65,7 @@ class SyncResult:
 # ---------------------------------------------------------------------------
 # GmailPort: the interface sync() is written against.
 #
-#   get_profile() -> {"history_id": str}
+#   get_profile() -> {"history_id": str, "messages_total": int | None}
 #   list_all_message_ids() -> Iterator[str]            (pages internally)
 #   list_recent_message_ids(days: int) -> Iterator[str] (pages internally)
 #   get_messages(ids: list[str]) -> dict[str, dict]     (batched; missing ids simply
@@ -92,7 +92,10 @@ class RealGmailPort:
         profile = self._service.users().getProfile(userId=self._user_id).execute(
             num_retries=NUM_RETRIES
         )
-        return {"history_id": profile["historyId"]}
+        return {
+            "history_id": profile["historyId"],
+            "messages_total": profile.get("messagesTotal"),
+        }
 
     def _list_ids(self, query: str | None) -> Iterator[str]:
         page_token = None
@@ -387,6 +390,16 @@ def _drain_pending(conn, port, config: MailConfig, deadline: float | None,
     return fetched
 
 
+def _record_gmail_total(conn, profile: dict) -> None:
+    """Keeps the last-seen Gmail `messagesTotal` so `mail status` can show it without a
+    network call of its own. `mail verify` always asks Gmail live instead.
+    """
+    if profile.get("messages_total") is None:
+        return
+    set_sync_state(conn, verify.GMAIL_TOTAL_KEY, str(profile["messages_total"]))
+    set_sync_state(conn, verify.GMAIL_TOTAL_AT_KEY, _now_iso())
+
+
 def sync(conn, port, config: MailConfig, budget_seconds: float | None = None,
          raw_dir: Path | None = None) -> SyncResult:
     """`raw_dir` defaults to `raw/` next to mail.db (rawstore.default_raw_dir)."""
@@ -397,7 +410,9 @@ def sync(conn, port, config: MailConfig, budget_seconds: float | None = None,
 
     if get_sync_state(conn, "backfill_complete") != "1":
         if get_sync_state(conn, "history_id") is None:
-            set_sync_state(conn, "history_id", str(port.get_profile()["history_id"]))
+            profile = port.get_profile()
+            set_sync_state(conn, "history_id", str(profile["history_id"]))
+            _record_gmail_total(conn, profile)
             _queue_ids(conn, port.list_all_message_ids())
 
         fetched += _drain_pending(conn, port, config, deadline, raw_dir)
@@ -428,9 +443,11 @@ def sync(conn, port, config: MailConfig, budget_seconds: float | None = None,
     _queue_ids(conn, added)
     fetched += _drain_pending(conn, port, config, deadline, raw_dir)
 
+    profile = port.get_profile()
+    _record_gmail_total(conn, profile)
     set_sync_state(
         conn, "history_id", str(new_history_id) if new_history_id is not None
-        else str(port.get_profile()["history_id"])
+        else str(profile["history_id"])
     )
 
     return SyncResult(

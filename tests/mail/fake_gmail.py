@@ -75,7 +75,7 @@ class FakeGmailPort:
     # --- GmailPort ---
 
     def get_profile(self) -> dict:
-        return {"history_id": str(self._history_id)}
+        return {"history_id": str(self._history_id), "messages_total": len(self._messages)}
 
     def list_all_message_ids(self):
         return iter(list(self._messages.keys()))

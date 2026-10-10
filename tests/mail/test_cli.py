@@ -143,7 +143,7 @@ def test_sync_full_flag_resets_sync_state_first(env_dirs, capsys, monkeypatch):
     monkeypatch.setattr(gmail, "reset_sync_state", lambda conn: calls.append("reset"))
     monkeypatch.setattr(
         gmail, "sync",
-        lambda conn, port, config, budget_seconds=None: gmail.SyncResult(
+        lambda conn, port, config, budget_seconds=None, raw_dir=None: gmail.SyncResult(
             fetched=0, mode="backfill", done=True
         ),
     )
@@ -166,7 +166,7 @@ def test_sync_without_full_flag_does_not_reset(env_dirs, capsys, monkeypatch):
     monkeypatch.setattr(gmail, "reset_sync_state", lambda conn: calls.append("reset"))
     monkeypatch.setattr(
         gmail, "sync",
-        lambda conn, port, config, budget_seconds=None: gmail.SyncResult(
+        lambda conn, port, config, budget_seconds=None, raw_dir=None: gmail.SyncResult(
             fetched=0, mode="incremental", done=True
         ),
     )

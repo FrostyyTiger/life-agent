@@ -42,7 +42,9 @@ def test_exposes_exactly_search_show_status(running_server):
 def test_status_tool(running_server):
     server = mail_mcp.build_server(running_server)
     payload = _call(server, "status", {})
-    assert payload == {"messages": 1}
+    assert payload["messages"] == 1
+    assert (payload["rows_live"], payload["rows_deleted"]) == (1, 0)
+    assert payload["raw_files"] == 0  # the row was stored directly, not via sync
 
 
 def test_search_tool(running_server):

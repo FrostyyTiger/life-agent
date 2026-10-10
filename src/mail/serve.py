@@ -6,7 +6,7 @@ docs/trust-model.md. No framework: stdlib `http.server` + a `socketserver`
 Unix-domain-socket server. Three endpoints, all GET, all read-only, none of which can
 list the whole archive:
 
-    GET /status                                          -> {"messages": N}
+    GET /status                                          -> {"messages": N, ...counts}
     GET /search?q=&mode=&from=&since=&until=&limit=       -> {"hits": [...]}
     GET /show?id=                                          -> {"message": {...}}
 
@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse
 
 from src.mail import search as search_mod
 from src.mail import store
+from src.mail import verify as verify_mod
 
 MAX_LIMIT = 50
 DEFAULT_SOCKET_MODE = 0o660
@@ -116,7 +117,7 @@ class MailQueryServer(UnixStreamServer):
     def handle_status(self) -> dict:
         conn = self._connect()
         try:
-            return {"messages": store.count_messages(conn)}
+            return verify_mod.archive_counts(conn, self.state_dir / "raw", self.db_path)
         finally:
             conn.close()
 
