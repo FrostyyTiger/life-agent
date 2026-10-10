@@ -476,7 +476,7 @@ def test_installed_units_split_sync_and_embed():
 
     assert "cli sync --budget 600 --no-embed" in sync_unit
     assert "cli embed --budget 2700" in embed_unit
-    for setting in ("Nice=19", "IOSchedulingClass=idle", "CPUWeight=20", "MemoryMax=3500M"):
+    for setting in ("Nice=19", "IOSchedulingClass=idle", "CPUWeight=20", "MemoryMax=4G"):
         assert f"\n{setting}\n" in embed_unit
     assert "\nMemoryDenyWriteExecute" not in embed_unit
     assert "OnCalendar=hourly" in embed_timer and "Persistent=true" in embed_timer
@@ -490,3 +490,25 @@ def test_installed_units_split_sync_and_embed():
         return {line for line in unit.splitlines() if line.split("=", 1)[0] in keys}
 
     assert hardening(embed_unit) == hardening(sync_unit)
+
+
+def test_embed_measure_prints_rate_and_rss_and_commits_nothing(env_dirs, capsys,
+                                                                message_factory, monkeypatch):
+    from tests.mail.fake_embedder import FakeEmbedder
+
+    monkeypatch.setattr(cli, "_build_embedder", lambda env: FakeEmbedder())
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    for i in range(4):
+        store.upsert_message(conn, message_factory(f"m{i}", body_text=f"body {i}"))
+    conn.close()
+
+    assert cli.main(["embed", "--measure", "3"]) == 0
+    out = capsys.readouterr().out
+    assert "messages:              3" in out
+    assert "messages/min" in out
+    assert "peak RSS:" in out
+    assert "peak VRAM:" in out
+
+    conn = store.connect(env_dirs["state"] / "mail.db")
+    assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0
+    conn.close()

@@ -205,7 +205,50 @@ def cmd_auth(env: Env, args: argparse.Namespace) -> int:
     return 0
 
 
+def _mb(size: int) -> str:
+    return f"{size / 1024 / 1024:.0f} MB"
+
+
+def cmd_embed_measure(env: Env, n: int) -> int:
+    """`mail embed --measure N`: the numbers decision D1 needs. Commits nothing."""
+    rss_before = embed_mod.current_rss_bytes()
+    embedder = _build_embedder(env)
+    # What the query socket holds once a vec/hybrid search has loaded the model.
+    embedder.embed(["measure: one query, as the query service would encode it"])
+    rss_loaded = embed_mod.current_rss_bytes()
+    vram_loaded = embed_mod.peak_vram_bytes()
+
+    conn = store.connect(_db_path(env))
+    try:
+        result = embed_mod.measure(conn, embedder, n)
+    finally:
+        conn.rollback()
+        conn.close()
+    peak = embed_mod.peak_rss_bytes()
+    vram_peak = embed_mod.peak_vram_bytes()
+
+    hours = result["backlog_hours"]
+    print("\n".join([
+        "embed --measure (nothing committed)",
+        f"  messages:              {result['messages']} ({result['chunks']} chunks) "
+        f"in {result['seconds']:.1f} s",
+        f"  rate:                  {result['messages_per_minute']:.1f} messages/min",
+        f"  backlog:               {result['backlog']} un-embedded messages, "
+        + (f"~{hours:.1f} h of embed time at this rate" if hours is not None else "rate unknown"),
+        f"  RSS before model:      {_mb(rss_before)}",
+        f"  model loaded:          RSS {_mb(rss_loaded)}, VRAM "
+        + (_mb(vram_loaded) if vram_loaded is not None else "n/a (no CUDA)")
+        + " (what mail serve holds after its first vec/hybrid search)",
+        f"  peak RSS:              {_mb(peak)} (embed unit MemoryMax=4G)",
+        "  peak VRAM:             "
+        + (_mb(vram_peak) if vram_peak is not None else "n/a (no CUDA, CPU fallback)"),
+    ]))
+    return 0
+
+
 def cmd_embed(env: Env, args: argparse.Namespace) -> int:
+    if args.measure is not None:
+        return cmd_embed_measure(env, args.measure)
     embedder = _build_embedder(env)
     conn = store.connect(_db_path(env))
     try:
@@ -411,6 +454,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     embed_parser = subparsers.add_parser("embed", help="embed messages that have no chunks yet")
     embed_parser.add_argument("--budget", type=float, default=None, help="seconds")
+    embed_parser.add_argument(
+        "--measure", type=int, default=None, metavar="N",
+        help="embed the N newest messages into a scratch table, print messages/min and "
+             "RSS, commit nothing",
+    )
 
     subparsers.add_parser(
         "verify",

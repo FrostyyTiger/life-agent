@@ -88,5 +88,116 @@ def test_recent_messages_embedded_before_older_ones(conn, embedder, message_fact
     store.upsert_message(conn, old)
     store.upsert_message(conn, recent)
 
-    order = [row["id"] for row in embed._messages_needing_embeddings(conn, now_ms - 30 * day_ms)]
+    order = embed._messages_needing_embeddings(conn, now_ms - 30 * day_ms)
     assert order == ["recent", "old"]
+
+
+# --- batching (docs/plans/mail-personal-v1.md stage 2) ---
+
+
+class CountingEmbedder(FakeEmbedder):
+    def __init__(self):
+        self.calls = []
+
+    def embed(self, texts):
+        self.calls.append(len(texts))
+        return super().embed(texts)
+
+
+def _seed(conn, message_factory, count, words=10):
+    import time
+
+    now_ms = int(time.time() * 1000)
+    for i in range(count):
+        body = " ".join(f"w{i}x{j}" for j in range(words))
+        store.upsert_message(conn, message_factory(
+            f"m{i:03d}", subject=f"subject {i}", body_text=body,
+            internal_date=now_ms - i * 60_000,
+        ))
+
+
+def _dump(conn):
+    rows = conn.execute(
+        "SELECT c.message_id, c.idx, c.text, v.embedding FROM chunks c "
+        "JOIN vec_chunks v ON v.rowid = c.id ORDER BY c.message_id, c.idx"
+    ).fetchall()
+    return [tuple(row) for row in rows]
+
+
+def test_batched_path_writes_the_same_chunks_and_vectors_as_per_message(
+        tmp_path, message_factory):
+    per_message = store.connect(tmp_path / "a.db")
+    batched = store.connect(tmp_path / "b.db")
+    for conn in (per_message, batched):
+        _seed(conn, message_factory, 20, words=100)  # 3 chunks each with the fake
+
+    assert embed.embed_pending(per_message, FakeEmbedder(), batch_chunks=1) == 20
+    counting = CountingEmbedder()
+    assert embed.embed_pending(batched, counting, batch_chunks=32) == 20
+
+    assert _dump(batched) == _dump(per_message)
+    assert len(_dump(batched)) == 60
+    assert len(counting.calls) < 20  # chunks from several messages per model call
+    assert max(counting.calls) <= 32 + embed.MAX_CHUNKS_PER_MESSAGE - 1
+    per_message.close()
+    batched.close()
+
+
+def test_budget_cut_off_mid_batch_commits_the_batch_and_resumes(conn, message_factory,
+                                                                 monkeypatch):
+    _seed(conn, message_factory, 10)  # 1 chunk each -> batches of 4 with batch_chunks=4
+    clock = [0.0]
+    monkeypatch.setattr(embed.time, "monotonic", lambda: clock[0])
+
+    class ClockEmbedder(FakeEmbedder):
+        def embed(self, texts):
+            clock[0] += 100.0  # the budget runs out while this batch is being encoded
+            return super().embed(texts)
+
+    processed = embed.embed_pending(conn, ClockEmbedder(), budget_seconds=50, batch_chunks=4)
+    assert processed == 4  # the batch in flight is finished and committed, no more
+    assert conn.execute("SELECT COUNT(DISTINCT message_id) FROM chunks").fetchone()[0] == 4
+
+    processed = embed.embed_pending(conn, FakeEmbedder(), batch_chunks=4)
+    assert processed == 6
+    assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 10
+
+
+def test_message_embedded_meanwhile_is_not_duplicated(conn, message_factory, monkeypatch):
+    _seed(conn, message_factory, 3)
+    real_write = embed._write_message_chunks
+
+    def write_twice(c, message_id, texts, vectors):
+        real_write(c, message_id, texts, vectors)  # "another run" got there first
+        return real_write(c, message_id, texts, vectors)
+
+    monkeypatch.setattr(embed, "_write_message_chunks", write_twice)
+    assert embed.embed_pending(conn, FakeEmbedder()) == 0
+    assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 3
+
+
+def test_measure_reports_rate_and_commits_nothing(tmp_path, message_factory):
+    db_path = tmp_path / "mail.db"
+    conn = store.connect(db_path)
+    _seed(conn, message_factory, 12, words=100)
+    conn.close()
+
+    conn = store.connect(db_path)
+    result = embed.measure(conn, FakeEmbedder(), 5)
+    conn.rollback()
+    conn.close()
+
+    assert result["messages"] == 5
+    assert result["chunks"] == 15
+    assert result["messages_per_minute"] > 0
+    assert result["backlog"] == 12
+
+    check = store.connect(db_path)
+    assert check.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0
+    assert check.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0] == 0
+    check.close()
+
+
+def test_rss_helpers_report_something_on_linux():
+    assert embed.current_rss_bytes() > 0
+    assert embed.peak_rss_bytes() >= embed.current_rss_bytes() // 2

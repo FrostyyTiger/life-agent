@@ -7,8 +7,10 @@ Wants=network-online.target
 # before installing. See setup/README.md.
 # This repo deliberately contains no path to a real installation.
 #
-# Embedding is its own job (docs/plans/mail-personal-v1.md stage 2) so that on a
-# CPU-only host it can never hold up the 15-minute sync, which runs with --no-embed.
+# Embedding is its own job (docs/plans/mail-personal-v1.md stage 2) so it can never
+# hold up the 15-minute sync, which runs with --no-embed. On a CUDA host bge-m3 runs
+# fp16 on the GPU (~1.2 GB VRAM, the query service holds a second copy); without a GPU
+# it falls back to batched CPU embedding.
 # A run stops after its budget; every message it finished is committed, and the next
 # hourly run picks up at the next un-embedded message. Network is needed only for the
 # one-time BAAI/bge-m3 download (docs/egress.md row 6).
@@ -32,11 +34,11 @@ ExecStart=__CODE_DIR__/.venv/bin/python -m src.mail.cli embed --budget 2700
 Nice=19
 IOSchedulingClass=idle
 CPUWeight=20
-MemoryMax=3500M
+MemoryMax=4G
 
 # Same hardening as life-agent-mail-sync.service, minus the token path (embedding
-# never talks to Gmail). MemoryDenyWriteExecute is deliberately OMITTED: torch's CPU
-# path uses oneDNN, which generates kernels at runtime (and CUDA breaks under it too).
+# never talks to Gmail). MemoryDenyWriteExecute is deliberately OMITTED: CUDA breaks
+# under it, and torch's CPU fallback uses oneDNN, which generates kernels at runtime.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
