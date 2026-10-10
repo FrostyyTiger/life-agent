@@ -1,6 +1,6 @@
-# mail-personal-v1: the mail archive goes live on a small CPU-only host
+# mail-personal-v1: the mail archive goes live in its own GPU container
 
-**Status:** plan, 2026-10-10. Not started.
+**Status:** plan, 2026-10-10. Stages 1–2 in progress. Revised the same day: the host is a dedicated LXC with a shared GPU, not the CPU-only VM (D1).
 **Builds on:** `docs/plans/mail-v1.md` (stages 1–10 done, never run against real mail). Its original host
 was retired before the owner items landed, so nothing ever synced.
 **Host specifics** (hostname, paths, access) are in the private notes repo, `mail-personal-kickoff.md`.
@@ -11,8 +11,8 @@ This file names no real host, path or address.
 1. **A copy of every mail.** Every Gmail message lands on the host as its original RFC 822 bytes, plus the
    parsed row in `mail.db` that mail-v1 already writes. The copy is complete: one command proves
    Gmail's message count, the DB rows and the raw files all agree.
-2. **Embeddings now and then.** Embedding is its own job on its own timer, separate from the
-   15-minute sync. On a CPU-only host it must never hold up the copy.
+2. **Embeddings next to the copy.** Embedding is its own job on its own timer, separate from the
+   15-minute sync, so a slow or failed embed run never holds up the copy.
 3. **Search.** Use the existing hybrid search (FTS5 + `bge-m3` vectors) through the read-only socket and
    `mail mcp`, unchanged.
 
@@ -26,10 +26,10 @@ minted. They come back in a later plan, once the archive has run cleanly for a w
 
 | mail-v1 assumed | this host |
 |---|---|
-| CUDA GPU, fp16 `bge-m3` | **no GPU**, 2 vCPU, ~4.5 GB RAM (can be raised, see D1) |
+| a full GPU host | a **dedicated unprivileged LXC** that shares the homelab's one consumer GPU with other trusted containers (D1) |
 | embedding inside `sync --budget 600` | embedding is a separate, low-priority timer (stage 2) |
-| `$STATE_DIR` under the owner's home | `$STATE_DIR=/var/lib/life-agent/state`, on the VM's own disk (D3) |
-| torch from PyPI (CUDA wheels, ~2.5 GB) | CPU-only torch wheels on this host (stage 2) |
+| `$STATE_DIR` under the owner's home | `$STATE_DIR=/var/lib/life-agent/state`, on the container's own disk (D3) |
+| the owner's home dir is a login account | the container holds only this project; the owner logs in to install and to search |
 
 The trust model does not change: the `life-agent` user, a `0700` state directory, `0600` tokens, the
 read-only socket as the only way in for other sessions, and `gmail.readonly` as the only Gmail scope used.
@@ -59,32 +59,35 @@ thrown away. Keep them.
 - Tests (fixtures only): the file is written and gunzips to the exact bytes, re-sync leaves it alone,
   deletion keeps it, `verify` catches a missing file and an orphan file, and the leak test still passes.
 
-### Stage 2: embedding as its own job, CPU-friendly (code)
+### Stage 2: embedding as its own job (code)
 
 - `sync` gets `--no-embed`. The installed sync unit uses it, while the default stays as it is for GPU hosts.
 - New units `life-agent-mail-embed.service` + `.timer`: hourly (`OnCalendar=hourly`, `Persistent=true`),
   `ExecStart=… mail embed --budget 2700`. Settings:
-  - `Nice=19`, `IOSchedulingClass=idle`, `CPUWeight=20`, `MemoryMax=3500M`.
+  - `Nice=19`, `IOSchedulingClass=idle`, `CPUWeight=20`, `MemoryMax=4G`. The GPU is shared, so the
+    embed run and the query service each hold `bge-m3` in fp16 (~1.2 GB VRAM each).
   - The same hardening as the sync unit. Keep `MemoryDenyWriteExecute` off: torch's CPU path uses oneDNN,
     which generates kernels at runtime.
   - The embed run and the sync run must not corrupt each other. SQLite WAL plus a busy timeout covers
     this. Test a sync running in parallel with an embed batch.
-- `embed.py`: on CPU, set `torch.set_num_threads(os.cpu_count())` and batch chunks across messages (e.g.
-  32 chunks per `encode`) instead of one message per call. Keep one commit per message, so a run can still
+- `embed.py`: batch chunks across messages (e.g. 32 chunks per `encode`) instead of one message per call.
+  On the CPU fallback, set `torch.set_num_threads(os.cpu_count())`. Keep one commit per message, so a run can still
   be interrupted and resumed.
-- CPU-only torch: the CUDA wheels must not land on this host, and installs on GPU hosts must keep working.
-  Possible routes are a uv index for `pytorch-cpu` selected by an env var or extra, or a separate `uv pip
-  install` step in the setup README. Pick one and document it.
-- `mail embed --measure N`: embed N recent messages into a scratch table and print messages/min and peak
-  RSS. Nothing is committed. This is the input for decision D1.
+- `mail embed --measure N`: embed N recent messages into a scratch table and print messages/min, peak RSS
+  and peak VRAM. Nothing is committed. It sizes the backfill and checks that the GPU is shared without trouble.
 - Tests: `--no-embed` skips the embedder, the batched path writes the same chunks/vectors as the
   per-message path (stub embedder), and the budget cut-off works mid-batch.
 
-### Stage 3: install on the host (host, interactive)
+### Stage 3: the container, then the install (host, interactive)
 
+0. Homelab side (root on the hypervisor, done from the machine that holds that key): create the unprivileged LXC
+   following the homelab's existing GPU-room pattern (device nodes, the identical NVIDIA userspace
+   `--no-kernel-module`, IPv6 off if Hugging Face downloads hang). Then join the tailnet tagged, add it to the
+   nightly backup, and check that `nvidia-smi` and `torch.cuda.is_available()` work inside it. The homelab
+   repo's room doc and GPU doc list it as a GPU room (one more userspace to upgrade in lockstep).
 1. Install `uv`. Clone this repo and the private data repo into the owner's assistant directory. The data
    repo only needs `config.yaml`, `threads/` and `briefs/` to exist; the clone can be read-only.
-2. `uv sync` with CPU torch. Then download `BAAI/bge-m3` into `$STATE_DIR/models` once, as `life-agent`.
+2. `uv sync`. Then download `BAAI/bge-m3` into `$STATE_DIR/models` once, as `life-agent`.
 3. `setup/bootstrap.sh` with `STATE_DIR=/var/lib/life-agent/state` and the other dirs overridden. Dry run
    first, read the dry-run output, then `--apply`. Warnings about a missing Claude token or insert token are
    expected and fine.
@@ -109,22 +112,25 @@ thrown away. Keep them.
 3. When the fetch is done, `mail verify` must exit 0. It is the proof that every mail is copied.
 4. Check search from another session through the socket: `mail search --mode fts` right away, and `hybrid`
    once embeddings cover recent mail (embedding runs newest 30 days first).
-5. Backups: confirm the next nightly VM backup includes `$STATE_DIR`, and do one restore test of a single
+5. Backups: confirm the next nightly backup includes `$STATE_DIR`, and do one restore test of a single
    `.eml.gz` file plus `mail.db` opened read-only.
-6. Register `mail mcp` in the owner's `~/.claude.json` on that host only, per the mail-v1 stage 10 note.
+6. Register `mail mcp` for Claude Code: on the container itself, and on the owner's laptops as an
+   ssh-wrapped stdio server (`ssh <container> <code>/bin/mail mcp`). The search runs in the container; only the
+   results travel back.
 7. Docs: `docs/status/mail-personal-v1.md` here, and the host's room doc in the homelab repo.
 
 ## Decisions
 
-- **D1, embedding model and VM size: open, the owner decides after stage 2's measurement.**
-  Recommendation: keep `bge-m3`, which handles German + English and needs no schema change. If `--measure`
-  projects the backfill at more than ~3 days, first raise the VM to 4 vCPU / 8 GB for the backfill. Only if
-  that is still too slow, switch to a smaller multilingual model. A switch changes the
-  `vec0` dimension, so it needs a migration and a full re-embed.
+- **D1, where embedding runs: DECIDED 2026-10-10 (owner).** A dedicated unprivileged LXC with the shared GPU.
+  The model stays `bge-m3`. Rejected: the CPU-only VM (slow backfill, and its RAM could not hold the embed run
+  and the query service at once; a VM cannot share the GPU). Also rejected: keeping the archive on the VM and
+  sending text to a GPU room's embed server (mail text would pass through a second room that runs CI or
+  holds client data). Cost accepted: one more container that shares the host's GPU driver, which is the most
+  plausible container-escape surface. Acceptable because the room is trusted and not internet-facing beyond
+  outbound HTTPS. CPU-only torch was dropped from stage 2. The CPU path stays as the fallback.
 - **D2, cadence:** sync every 15 min (unchanged), embed hourly with a 45-min budget at idle priority.
-- **D3, where the archive lives:** on the VM's own disk under `/var/lib/life-agent/state`, which the nightly
-  encrypted VM backup covers. **Not** on `/data` (the shared host dataset). That one is unencrypted, outside
-  the VM backup, and under its own reorganisation rules.
+- **D3, where the archive lives:** on the container's own disk under `/var/lib/life-agent/state`, which the
+  nightly encrypted backup covers. Not on any shared host dataset.
 - **D4, who runs what:** stages 1–2 as a lane on the agent VM (public repo, fixtures only), stages 3–5
   interactively on the host. No personal repo and no credential goes to the agent VM.
 
@@ -135,5 +141,7 @@ thrown away. Keep them.
 - OOM while embedding: `MemoryMax` kills only the embed run, sync is unaffected, and the next hourly run
   resumes from the next un-embedded message.
 - Token revoked or expired: sync prints `NEED-MARCEL:` and exits 2 (already built). The archive stays readable.
-- Disk: raw `.eml.gz` + DB for a large mailbox is single-digit GB, and the VM has more than 100 GB free.
+- GPU busy or gone (another room's job, a driver mismatch after a host upgrade): embed falls back to CPU
+  with a loud warning and keeps going slowly. The copy is unaffected.
+- Disk: raw `.eml.gz` + DB for a large mailbox is single-digit GB. Size the container disk at 40 GB or more.
   `mail status` prints the size.
