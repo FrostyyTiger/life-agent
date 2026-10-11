@@ -94,6 +94,11 @@ Roadmap:
 - **v1.5's other half** — automatic thread detection from mail + calendar activity. Not
   started; needs v1's thread store to exist first.
 - **v2** — drafted replies, reviewed by you, never sent by the agent.
+- **personal host** — the machine the rest of this runs beside: a removable encrypted archive disk
+  for raw files, a document server, and a file/photo organising workflow (script-built index,
+  model proposes, owner approves, script moves, everything logged and snapshotted). Files, photos
+  and documents are live; a repo mirror, a browser for API-less sites and a photo library are
+  planned. See [`docs/personal-host.md`](docs/personal-host.md).
 
 ## Documentation
 
@@ -106,6 +111,7 @@ Roadmap:
 | [`schema/thread.md`](schema/thread.md) | The thread file format |
 | [`docs/plans/mail-v1.md`](docs/plans/mail-v1.md) | The mail archive/digest design, stage by stage |
 | [`docs/status/mail-v1.md`](docs/status/mail-v1.md) | What's built, how it was verified, the owner's runbook |
+| [`docs/personal-host.md`](docs/personal-host.md) | The host: storage tiers, unplug-safety, backups, the files/photos and documents modules, what interactive sessions may read |
 
 ## License
 
