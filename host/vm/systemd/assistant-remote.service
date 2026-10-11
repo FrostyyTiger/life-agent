@@ -1,0 +1,21 @@
+# Claude Code Remote Control server: start sessions on this host from the Claude app or claude.ai/code.
+# Runs inside tmux (session `remote`) so the owner can attach to it: `tmux attach -t remote`.
+# NOT enabled by install.sh: the owner turns it on with `sudo systemctl enable --now assistant-remote`.
+# Works in ~/assistant (not ~): trust for the home directory is never saved, so a start in ~ would hang
+# on the trust prompt. First time only, answer the prompts by hand: see host/README.md.
+[Unit]
+Description=Claude Code Remote Control server (tmux session `remote`)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=forking
+User=@USER@
+WorkingDirectory=@HOME@/assistant
+Environment=PATH=@HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/tmux new-session -d -s remote -c @HOME@/assistant "while true; do claude remote-control --name assistant --permission-mode auto; echo 'remote-control exited, restarting in 30 s'; sleep 30; done"
+ExecStop=/usr/bin/tmux kill-session -t remote
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

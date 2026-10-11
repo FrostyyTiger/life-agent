@@ -41,4 +41,5 @@ Pick the smallest case that applies. The backups hold the data; this repo holds 
 5. `tailscale serve --bg 443 http://127.0.0.1:8000`; Samba password: `sudo smbpasswd -a <user>` (owner types it).
 6. Claude Code: install, then rerun `install.sh --system` (links it into `/usr/local/bin`), log in (owner).
    Rules and skills are already linked by step 3. Daily use: `ssh -t <host> tmux new -A -s assistant claude`.
-7. `github-mirror` once by hand; check `~/github-mirror/last-run.txt`.
+7. Remote Control (optional): see `README.md`, then `sudo systemctl enable --now assistant-remote`.
+8. `github-mirror` once by hand; check `~/github-mirror/last-run.txt`.
