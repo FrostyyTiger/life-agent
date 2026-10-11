@@ -12,6 +12,7 @@ details (names, addresses, the map of what lives where) are in the private `life
 | `vm/systemd/` | `/etc/systemd/system/` (rendered) | mirror 00:30, assistant update 00:45, document export 01:00 |
 | `vm/samba/smb.conf` | `/etc/samba/smb.conf` (rendered) | tailnet-only shares `data` and `scan` |
 | `vm/paperless/` | `~/paperless/docker-compose.yml` (link) + env examples | the document server |
+| `vm/tmux.conf` | `~/.tmux.conf` (link) | the persistent assistant session |
 | `vm/install.sh` | | `--user` (links, no sudo) or `--system` (also units, Samba, fstab) |
 | `proxmox/` | `/usr/local/sbin`, `/etc/systemd/system` on the hypervisor | archive pool up/down, snapshots, scrub, host-level backup |
 

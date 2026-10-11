@@ -37,6 +37,7 @@ for f in github-mirror github-env assistant-update files-index plan-move; do
 done
 mkdir -p "$HOME/files-index" "$HOME/github-mirror" "$HOME/paperless"
 link "$VM/paperless/docker-compose.yml" "$HOME/paperless/docker-compose.yml"
+link "$VM/tmux.conf" "$HOME/.tmux.conf"
 
 [[ "$MODE" == "--system" ]] || exit 0
 
@@ -50,6 +51,8 @@ for u in "$VM"/systemd/*; do
     fi
 done
 sudo install -m 755 "$VM/bin/data-mounted" /usr/local/sbin/data-mounted
+# Non-interactive SSH commands do not read ~/.profile, so ~/.local/bin is not on PATH there.
+[[ -x "$HOME/.local/bin/claude" ]] && sudo ln -sf "$HOME/.local/bin/claude" /usr/local/bin/claude
 if [[ -d /etc/samba ]] && ! render "$VM/samba/smb.conf" | sudo cmp -s - /etc/samba/smb.conf; then
     sudo cp /etc/samba/smb.conf "/etc/samba/smb.conf.bak-$STAMP" 2>/dev/null || true
     render "$VM/samba/smb.conf" | sudo tee /etc/samba/smb.conf >/dev/null
