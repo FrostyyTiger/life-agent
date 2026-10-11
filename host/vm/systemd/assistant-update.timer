@@ -1,0 +1,9 @@
+[Unit]
+Description=Nightly assistant repo update
+
+[Timer]
+OnCalendar=*-*-* 00:45 @TZ@
+Persistent=true
+
+[Install]
+WantedBy=timers.target

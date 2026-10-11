@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Nightly mirror of every repo OWNED by the personal GitHub account (org repos excluded).
+# Read-only token in ~/.config/github-mirror.token. Never deletes a local mirror and never
+# prunes refs: a repo or branch removed on GitHub stays here (warning in the log).
+# Exclusions: one repo name per line in ~/github-mirror/exclude.txt.
+set -uo pipefail
+ROOT="$HOME/github-mirror"
+LOG="$ROOT/mirror.log"
+mkdir -p "$ROOT"
+exec >>"$LOG" 2>&1
+echo "=== $(date -Is) start"
+
+. "$(dirname "$(readlink -f "$0")")/github-env"
+if ! github_env; then
+    echo "no token at $GITHUB_TOKEN_FILE; nothing to do"; echo "$(date -Is) NO-TOKEN" > "$ROOT/last-run.txt"; exit 1
+fi
+export GITHUB_TOKEN
+repos="$(python3 - <<'PY'
+import json, os, urllib.request
+tok, out, page = os.environ["GITHUB_TOKEN"], [], 1
+while True:
+    req = urllib.request.Request(f"https://api.github.com/user/repos?affiliation=owner&per_page=100&page={page}",
+        headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"})
+    batch = json.load(urllib.request.urlopen(req, timeout=60))
+    if not batch: break
+    out += [r["full_name"] for r in batch]; page += 1
+print("\n".join(sorted(out)))
+PY
+)" || { echo "API listing failed"; echo "$(date -Is) API-FAIL" > "$ROOT/last-run.txt"; exit 1; }
+[[ -n "$repos" ]] || { echo "API returned no repos"; echo "$(date -Is) EMPTY" > "$ROOT/last-run.txt"; exit 1; }
+
+exclude="$ROOT/exclude.txt"; touch "$exclude"
+ok=0 new=0 fail=0 skipped=0
+while read -r full; do
+    name="${full#*/}"
+    if grep -qxF "$name" "$exclude"; then skipped=$((skipped+1)); continue; fi
+    dir="$ROOT/$name.git"
+    if [[ -d "$dir" ]]; then
+        if git -C "$dir" remote update >/dev/null 2>&1; then ok=$((ok+1)); else echo "FAIL update $name"; fail=$((fail+1)); fi
+    else
+        if git clone --mirror --quiet "https://github.com/$full.git" "$dir"; then echo "NEW $name"; new=$((new+1)); else echo "FAIL clone $name"; rm -rf "$dir"; fail=$((fail+1)); fi
+    fi
+done <<< "$repos"
+
+# Local mirrors whose repo is gone from GitHub (or the token's scope): kept, flagged.
+for d in "$ROOT"/*.git; do
+    [[ -d "$d" ]] || continue; n="$(basename "$d" .git)"
+    grep -q "/$n\$" <<< "$repos" || echo "WARN $n no longer on GitHub (kept locally)"
+done
+
+summary="updated $ok, new $new, failed $fail, excluded $skipped"
+echo "$summary"; echo "$(date -Is) $([[ $fail -eq 0 ]] && echo OK || echo FAIL) $summary" > "$ROOT/last-run.txt"
+[[ $fail -eq 0 ]]

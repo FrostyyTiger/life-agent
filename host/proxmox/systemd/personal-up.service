@@ -1,0 +1,12 @@
+[Unit]
+Description=Import and mount the archive pool (optional, never blocks boot)
+After=zfs-import.target zfs-mount.service
+Before=pve-guests.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/personal-up
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

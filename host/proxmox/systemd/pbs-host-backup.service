@@ -1,0 +1,10 @@
+[Unit]
+Description=Encrypted host-level file backup to PBS (archive pool + host config)
+After=network-online.target pve-guests.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pbs-host-backup
+Nice=10
+IOSchedulingClass=idle

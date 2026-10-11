@@ -1,0 +1,6 @@
+#!/bin/bash
+# personal-snap <hourly|daily|monthly> <keep>: rolling snapshots. Silent when the pool is absent.
+. /etc/default/personal
+mountpoint -q "$MOUNT" || exit 0
+zfs snapshot "$DATASET@auto-$1-$(date +%F-%H%M)"
+zfs list -H -t snapshot -o name -s creation "$DATASET" | grep "@auto-$1-" | head -n -"$2" | xargs -r -n1 zfs destroy

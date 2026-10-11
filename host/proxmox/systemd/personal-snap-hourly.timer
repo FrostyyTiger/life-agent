@@ -1,0 +1,7 @@
+[Unit]
+Description=personal-snap-hourly timer
+[Timer]
+OnCalendar=hourly
+Persistent=true
+[Install]
+WantedBy=timers.target

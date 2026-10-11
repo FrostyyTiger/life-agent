@@ -1,0 +1,25 @@
+#!/bin/bash
+# Host-level encrypted file backup to Proxmox Backup Server: what the VM backups cannot see.
+#   personal.pxar  the archive dataset, read from a fresh snapshot; skipped WITH A MAIL when the pool is absent,
+#                  so an empty mountpoint is never backed up as if it were the data
+#   etc.pxar       /etc incl. /etc/pve (a FUSE mount, hence --include-dev)
+#   root.pxar      /root        usrlocal.pxar  /usr/local/sbin
+. /etc/default/personal
+export PBS_REPOSITORY PBS_FINGERPRINT
+export PBS_PASSWORD="$(cat "$PBS_SECRET_FILE")"
+ARCHIVES="etc.pxar:/etc root.pxar:/root usrlocal.pxar:/usr/local/sbin"
+if mountpoint -q "$MOUNT"; then
+  zfs destroy "$DATASET@pbs" 2>/dev/null; zfs snapshot "$DATASET@pbs"
+  ARCHIVES="personal.pxar:$MOUNT/.zfs/snapshot/pbs $ARCHIVES"
+else
+  echo "$POOL not mounted: personal.pxar skipped" | mail -s "$(hostname): host backup WITHOUT personal files" root
+fi
+LOG=$(mktemp)
+if proxmox-backup-client backup $ARCHIVES --include-dev /etc/pve --keyfile "$PBS_KEYFILE" \
+     --backup-type host --backup-id "$BACKUP_ID" >"$LOG" 2>&1; then
+  tail -5 "$LOG"; rm -f "$LOG"; exit 0
+else
+  rc=$?; { echo "Host-level PBS backup FAILED (exit $rc) on $(hostname)."; echo; tail -40 "$LOG"; } \
+    | mail -s "$(hostname): host file backup FAILED" root
+  cat "$LOG"; rm -f "$LOG"; exit $rc
+fi

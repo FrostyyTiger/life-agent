@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Nightly: fast-forward the two assistant repos on this host and refresh the links into them.
+# Only merged work on main arrives here; nothing is ever pushed from this host.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/github-env"
+github_env || { echo "no GitHub token; skipping update"; exit 1; }
+BASE="${ASSISTANT_HOME:-$HOME/assistant}"
+rc=0
+for r in life-agent life-agent-notes; do
+    [[ -d "$BASE/$r/.git" ]] || { echo "missing $BASE/$r"; rc=1; continue; }
+    git -C "$BASE/$r" pull --ff-only --quiet || { echo "pull failed: $r (local changes or diverged?)"; rc=1; }
+done
+"$BASE/life-agent/host/vm/install.sh" --user || rc=1
+echo "$(date -Is) assistant-update rc=$rc"
+exit $rc

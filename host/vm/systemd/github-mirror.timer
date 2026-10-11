@@ -1,0 +1,9 @@
+[Unit]
+Description=Nightly GitHub mirror (before the document export and the VM backup)
+
+[Timer]
+OnCalendar=*-*-* 00:30 @TZ@
+Persistent=true
+
+[Install]
+WantedBy=timers.target

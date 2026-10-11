@@ -1,0 +1,3 @@
+#!/bin/sh
+# Samba root preexec for [data]: refuse SMB connections while the archive disk (virtiofs /data) is absent.
+mountpoint -q /data

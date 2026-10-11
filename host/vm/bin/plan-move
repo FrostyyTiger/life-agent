@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""plan-move <plan.tsv>: execute a move plan (src<TAB>dst[<TAB>reason] per line).
+
+Atomic renames only (src and dst must be on the same filesystem), never overwrites, never deletes.
+Every executed move is appended to ~/files-index/moves.log as <ISO time><TAB>src<TAB>dst.
+Missing sources are skipped (a re-run after a partial run is safe)."""
+import datetime, os, sys
+
+if len(sys.argv) != 2:
+    sys.exit(__doc__)
+assert os.path.ismount("/data"), "/data not mounted"
+log_path = os.path.expanduser("~/files-index/moves.log")
+os.makedirs(os.path.dirname(log_path), exist_ok=True)
+plan = [l.rstrip("\n").split("\t") for l in open(sys.argv[1], encoding="utf-8") if l.strip()]
+ok = skipped = failed = 0
+with open(log_path, "a", encoding="utf-8") as log:
+    for row in plan:
+        src, dst = row[0], row[1]
+        if not os.path.lexists(src):
+            skipped += 1; continue
+        if os.path.lexists(dst):
+            failed += 1; print("EXISTS", dst); continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            os.rename(src, dst)  # same filesystem: atomic, no data copied
+        except OSError as e:
+            failed += 1; print("FAIL", src, e); continue
+        log.write(f"{datetime.datetime.now().astimezone().isoformat(timespec='seconds')}\t{src}\t{dst}\n")
+        log.flush(); ok += 1
+print(f"moved {ok}, skipped(missing) {skipped}, failed {failed}")
+sys.exit(1 if failed else 0)

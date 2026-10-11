@@ -85,17 +85,35 @@ a phone app or the drop share. HTTPS on the tailnet only; the web port is bound 
   VM (never in a transcript), and **no permission on documents tagged `private`**. This is the one
   privacy boundary in this document that is enforced by software rather than by convention.
 
+### Repo mirror — live
+
+A nightly mirror (`git clone --mirror`, then `remote update`) of every repository owned by the
+owner's account, organisation repos excluded, with a fine-grained read-only token: it cannot push.
+It never prunes refs and never deletes a local mirror, so a deleted branch or repo survives here;
+older states survive force-pushes in the VM backup's history. Git LFS objects are not mirrored.
+
+### Development — on the build VM, never here
+
+The assistant prepares development work here and launches it as a lane on the separate build VM.
+The network policy allows SSH from this host to the build VM and nothing back, so code running there
+cannot reach the owner's data. Briefs carry the task, not the owner's files. Scripts for this host
+are developed there too and arrive as a merged PR to `host/`.
+
 ### Planned
 
-- **Repo mirror.** A nightly `git clone --mirror` / `remote update` of the owner's repositories with a
-  fine-grained, read-only token. Read-only by construction: it cannot push. Older states survive
-  force-pushes in the VM backup's history.
 - **A browser for sites without an API.** A persistent Chromium on the VM. The owner logs in once
   through a web viewer on the tailnet (passwords and second factors never pass through the
   assistant); the assistant drives the same browser over a CDP port bound to localhost. Payments
   stay out of scope.
 - **Photo library.** A self-hosted photo service reading `Photos/` as an external library, with
   face and place search running on a local GPU.
+
+## The assistant's rules
+
+The interactive assistant on this host runs with the rules in [`host/CLAUDE.md`](../host/CLAUDE.md)
+(always loaded, kept to about thirty lines) and one skill per module in `host/skills/` (loaded only
+when a task needs it). Everything here is installed from [`host/`](../host/) and can be rebuilt from
+it: [`host/RESTORE.md`](../host/RESTORE.md).
 
 ## Privacy: what reaches the model provider
 
@@ -110,8 +128,7 @@ The working rule is **metadata first, content only when needed, one item at a ti
   server it is **enforced** by the `private` tag permission above.
 - Secrets (passwords, keys, tokens) never enter a session. They are typed by the owner into their own
   terminal and stored in files the session uses without printing.
-- Nothing in this module adds an outbound path other than the model API and the encrypted offsite
-  backups. The document server, the index and the move scripts make no network calls.
+- Outbound paths: the model API, the encrypted offsite backups, the read-only GitHub fetches and SSH
+  to the build VM. The document server, the index and the move scripts make no network calls.
 
-The unattended egress ledger is [`egress.md`](egress.md); this section covers the owner's interactive
-sessions, which that ledger does not.
+The egress ledger is [`egress.md`](egress.md); its appendix lists this host's paths.

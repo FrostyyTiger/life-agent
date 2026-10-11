@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Paperless-ngx export daily at 01:00
+
+[Timer]
+OnCalendar=*-*-* 01:00:00 @TZ@
+Persistent=true
+
+[Install]
+WantedBy=timers.target

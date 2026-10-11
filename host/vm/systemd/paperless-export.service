@@ -1,0 +1,12 @@
+[Unit]
+Description=Paperless-ngx daily document export to ~/paperless/export
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+WorkingDirectory=@HOME@/paperless
+ExecStart=/usr/bin/docker compose -f @HOME@/paperless/docker-compose.yml exec -T webserver document_exporter ../export --delete --no-progress-bar
+TimeoutStartSec=2h

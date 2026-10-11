@@ -96,9 +96,10 @@ Roadmap:
 - **v2** — drafted replies, reviewed by you, never sent by the agent.
 - **personal host** — the machine the rest of this runs beside: a removable encrypted archive disk
   for raw files, a document server, and a file/photo organising workflow (script-built index,
-  model proposes, owner approves, script moves, everything logged and snapshotted). Files, photos
-  and documents are live; a repo mirror, a browser for API-less sites and a photo library are
-  planned. See [`docs/personal-host.md`](docs/personal-host.md).
+  model proposes, owner approves, script moves, everything logged and snapshotted). Files, photos,
+  documents and a repo mirror are live, and the assistant's rules and skills are in
+  [`host/`](host/), from which the host can be rebuilt; a browser for API-less sites and a photo
+  library are planned. See [`docs/personal-host.md`](docs/personal-host.md).
 
 ## Documentation
 
@@ -111,6 +112,7 @@ Roadmap:
 | [`schema/thread.md`](schema/thread.md) | The thread file format |
 | [`docs/plans/mail-v1.md`](docs/plans/mail-v1.md) | The mail archive/digest design, stage by stage |
 | [`docs/status/mail-v1.md`](docs/status/mail-v1.md) | What's built, how it was verified, the owner's runbook |
+| [`host/`](host/README.md) | The personal host as code: the assistant's rules, skills, scripts, units, restore guide |
 | [`docs/personal-host.md`](docs/personal-host.md) | The host: storage tiers, unplug-safety, backups, the files/photos and documents modules, what interactive sessions may read |
 
 ## License

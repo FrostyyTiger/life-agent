@@ -1,0 +1,43 @@
+#!/bin/bash
+# files-index [dir]: photo/video index of <dir> (default /data/_inbox) -> ~/files-index/photos.tsv.
+# Local only, read-only on /data: path, size, sha256, EXIF date + source, camera, GPS, dimensions.
+set -eu
+mountpoint -q /data || { echo "/data not mounted" >&2; exit 1; }
+DIR="${1:-/data/_inbox}"
+OUT=~/files-index; mkdir -p $OUT
+EXT="jpg jpeg png heic heif gif webp tif tiff bmp cr3 cr2 nef arw dng raf orf rw2 mov mp4 m4v avi mts m2ts 3gp mkv"
+ARGS=(); for e in $EXT; do ARGS+=(-ext "$e"); done
+echo "[$(date +%T)] exiftool"
+exiftool -q -q -r -n -csv -charset filename=utf8 "${ARGS[@]}" \
+  -DateTimeOriginal -CreateDate -MediaCreateDate -ModifyDate -FileModifyDate \
+  -Make -Model -GPSLatitude -GPSLongitude -ImageWidth -ImageHeight -Duration -MIMEType \
+  "$DIR" > $OUT/photos-exif.csv || true
+echo "[$(date +%T)] sha256"
+python3 -I - "$OUT" <<'PY'
+import csv, hashlib, os, sys
+out = sys.argv[1]
+rows = list(csv.DictReader(open(f"{out}/photos-exif.csv", encoding="utf-8", errors="replace")))
+def sha(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""): h.update(b)
+    return h.hexdigest()
+def first(r, *ks):
+    for k in ks:
+        v = (r.get(k) or "").strip()
+        if v and not v.startswith("0000"): return v, k
+    return "", ""
+cols = ["path", "size", "sha256", "ext", "date", "date_src", "make", "model", "lat", "lon", "w", "h", "duration", "mime"]
+with open(f"{out}/photos.tsv", "w", encoding="utf-8") as f:
+    f.write("\t".join(cols) + "\n")
+    for r in rows:
+        p = r["SourceFile"]
+        d, src = first(r, "DateTimeOriginal", "CreateDate", "MediaCreateDate")
+        if not d: d, src = first(r, "FileModifyDate"); src = "file_mtime" if d else ""
+        vals = [p, str(os.path.getsize(p)), sha(p), os.path.splitext(p)[1].lower().lstrip("."), d, src,
+                r.get("Make", ""), r.get("Model", ""), r.get("GPSLatitude", ""), r.get("GPSLongitude", ""),
+                r.get("ImageWidth", ""), r.get("ImageHeight", ""), r.get("Duration", ""), r.get("MIMEType", "")]
+        f.write("\t".join(v.replace("\t", " ").replace("\n", " ") for v in vals) + "\n")
+print(len(rows), "files indexed")
+PY
+echo "[$(date +%T)] FILES-INDEX-DONE"

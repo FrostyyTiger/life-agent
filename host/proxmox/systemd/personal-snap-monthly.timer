@@ -1,0 +1,7 @@
+[Unit]
+Description=personal-snap-monthly timer
+[Timer]
+OnCalendar=*-*-01 00:20:00
+Persistent=true
+[Install]
+WantedBy=timers.target

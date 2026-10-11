@@ -1,0 +1,9 @@
+[Unit]
+Description=Fast-forward the assistant repos and refresh their links
+Wants=network-online.target
+After=network-online.target github-mirror.service
+
+[Service]
+Type=oneshot
+User=@USER@
+ExecStart=@HOME@/bin/assistant-update
