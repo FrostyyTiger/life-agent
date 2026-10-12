@@ -1,0 +1,5 @@
+[Unit]
+Description=personal-scrub (archive pool)
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/personal-scrub

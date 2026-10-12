@@ -1,0 +1,5 @@
+#!/bin/bash
+# Monthly scrub of the archive pool; silent when the pool is absent.
+. /etc/default/personal
+zpool list "$POOL" >/dev/null 2>&1 || exit 0
+zpool scrub "$POOL"

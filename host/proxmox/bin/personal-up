@@ -1,0 +1,6 @@
+#!/bin/bash
+# Bring the archive pool up. Safe when the disk is missing or the pool is already up; never fails boot.
+. /etc/default/personal
+zpool list "$POOL" >/dev/null 2>&1 || zpool import -d /dev/disk/by-id "$POOL" || { echo "$POOL: disk not present"; exit 0; }
+[ "$(zfs get -H -o value keystatus "$POOL")" = available ] || zfs load-key "$POOL" || { echo "$POOL: key not loaded"; exit 0; }
+zfs mount "$DATASET" 2>/dev/null; mountpoint -q "$MOUNT" && echo "$POOL: up" || echo "$POOL: NOT mounted"

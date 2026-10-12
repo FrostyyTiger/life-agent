@@ -1,0 +1,9 @@
+#!/bin/bash
+# Planned unplug of the archive disk. The VM is off while the pool is exported, then starts without it.
+set -e
+. /etc/default/personal
+qm shutdown "$VMID" --timeout 120
+zfs snapshot "$DATASET@unplug-$(date +%F-%H%M)"
+zpool export "$POOL"
+echo "$POOL exported: unplug now. Starting $VMID without it."
+qm start "$VMID"

@@ -148,3 +148,18 @@ then.
 Adding a capability means adding a row here **first**. If a change adds an egress path and this
 table is not updated in the same commit, the change is incomplete. The table should make you
 slightly uncomfortable to read; that discomfort is the signal that it is accurate.
+
+## Appendix: the personal host
+
+The ledger above covers the unattended `life-agent` user. The personal host
+([`personal-host.md`](personal-host.md), [`host/`](../host/)) adds these paths, all started by
+timers or by the owner's interactive sessions:
+
+| Path | Destination | What leaves | Direction of trust |
+| --- | --- | --- | --- |
+| Interactive sessions | model API | whatever the session reads: metadata by default, contents one item at a time | owner-side; the no-look list is a convention on the archive disk, enforced only in the document server |
+| `github-mirror`, `assistant-update` (nightly) | GitHub API + git over HTTPS | the read-only token and fetch requests; nothing is pushed | the token is fine-grained, Contents read-only: it cannot write |
+| Host backups (nightly) | the offsite backup server | the VM disk and the archive dataset, client-side encrypted | keys stay on the hypervisor and in the owner's password manager |
+| Lanes on the build VM | SSH from the host to the build VM | the task brief only; never files from this host | the build VM is less trusted and cannot connect back (network policy) |
+
+The document server, the file index and the move scripts make no network calls.

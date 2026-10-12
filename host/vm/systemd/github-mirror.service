@@ -1,0 +1,11 @@
+[Unit]
+Description=Mirror the owner's GitHub repos to ~/github-mirror
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+ExecStart=@HOME@/bin/github-mirror
+Nice=10
+IOSchedulingClass=idle

@@ -1,0 +1,10 @@
+# Sourced by github-mirror and assistant-update: read-only GitHub token -> git auth via env config.
+# The token never appears on a command line, in a remote URL or in a repo config.
+GITHUB_TOKEN_FILE="${GITHUB_TOKEN_FILE:-$HOME/.config/github-mirror.token}"
+github_env() {
+    [[ -s "$GITHUB_TOKEN_FILE" ]] || return 1
+    GITHUB_TOKEN="$(tr -d '[:space:]' < "$GITHUB_TOKEN_FILE")"
+    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+    export GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+    export GIT_TERMINAL_PROMPT=0
+}

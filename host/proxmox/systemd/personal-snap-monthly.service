@@ -1,0 +1,5 @@
+[Unit]
+Description=personal-snap-monthly (archive pool)
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/personal-snap monthly 12
