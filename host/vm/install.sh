@@ -31,7 +31,7 @@ for s in "$HOST_DIR"/skills/*/; do link "${s%/}" "$HOME/.claude/skills/$(basenam
 # Private map of this host (paths, services, hosts). Absent on a public-only checkout.
 [[ -f "$NOTES/host/MAP.md" ]] && link "$NOTES/host/MAP.md" "$HOME/assistant/MAP.md"
 # Scripts.
-for f in github-mirror github-env assistant-update files-index plan-move; do
+for f in github-mirror github-env assistant-update files-index plan-move printer; do
     chmod +x "$VM/bin/$f" 2>/dev/null || true
     link "$VM/bin/$f" "$HOME/bin/$f"
 done
@@ -51,6 +51,8 @@ for u in "$VM"/systemd/*; do
     fi
 done
 sudo install -m 755 "$VM/bin/data-mounted" /usr/local/sbin/data-mounted
+# printer-watch needs paho-mqtt; the unit itself stays off until the owner has run `printer login`.
+dpkg -s python3-paho-mqtt >/dev/null 2>&1 || sudo apt-get install -y python3-paho-mqtt
 # Non-interactive SSH commands do not read ~/.profile, so ~/.local/bin is not on PATH there.
 [[ -x "$HOME/.local/bin/claude" ]] && sudo ln -sf "$HOME/.local/bin/claude" /usr/local/bin/claude
 if [[ -d /etc/samba ]] && ! render "$VM/samba/smb.conf" | sudo cmp -s - /etc/samba/smb.conf; then
