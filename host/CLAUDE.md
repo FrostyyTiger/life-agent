@@ -27,7 +27,7 @@ other people's files. Documents tagged `private` in the document server are off 
 
 ## Where things are
 `~/assistant/MAP.md`: paths, services, timers, hosts. Skills (`files`, `documents`, `mirror`,
-`builder`) hold the how-to per module; load one when the task needs it.
+`builder`, `printer`) hold the how-to per module; load one when the task needs it.
 
 ## Memory
 Durable facts about the owner go to memory; decisions about this setup to

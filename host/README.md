@@ -8,8 +8,8 @@ details (names, addresses, the map of what lives where) are in the private `life
 | --- | --- | --- |
 | `CLAUDE.md` | `~/.claude/CLAUDE.md` (link) | the assistant's ground rules, always loaded |
 | `skills/<name>/SKILL.md` | `~/.claude/skills/<name>` (link) | how-to per module, loaded only when a task needs it |
-| `vm/bin/` | `~/bin/` (links) | `github-mirror`, `assistant-update`, `files-index`, `plan-move`, `github-env` |
-| `vm/systemd/` | `/etc/systemd/system/` (rendered) | mirror 00:30, assistant update 00:45, document export 01:00; `assistant-remote` (off until the owner enables it) |
+| `vm/bin/` | `~/bin/` (links) | `github-mirror`, `assistant-update`, `files-index`, `plan-move`, `github-env`, `printer` |
+| `vm/systemd/` | `/etc/systemd/system/` (rendered) | mirror 00:30, assistant update 00:45, document export 01:00; `assistant-remote` and `printer-watch` (off until the owner enables them) |
 | `vm/samba/smb.conf` | `/etc/samba/smb.conf` (rendered) | tailnet-only shares `data` and `scan` |
 | `vm/paperless/` | `~/paperless/docker-compose.yml` (link) + env examples | the document server |
 | `vm/tmux.conf` | `~/.tmux.conf` (link) | the persistent assistant session |
@@ -33,6 +33,15 @@ can start sessions here: the account needs 2FA.
 First time, by hand, so the trust and enable prompts are answered and saved:
 `ssh -t <host> 'cd ~/assistant && claude remote-control --name assistant'` → answer `y` twice →
 Ctrl+C. Then `sudo systemctl enable --now assistant-remote`. Stop: `sudo systemctl stop assistant-remote`.
+
+## 3D printer (read-only)
+
+`printer-watch.service` keeps `~/printer/` current from Bambu Cloud: status, events (jobs, errors),
+health. Read-only on purpose: the printer stays in cloud mode so the owner's Bambu app keeps working,
+and the script sends nothing but the status request `pushall`. Setup, by the owner:
+`ssh -t <host> printer login` (account email, password, the emailed code; the password is not stored),
+then `sudo systemctl enable --now printer-watch`. The token lasts about 90 days; `printer status`
+warns two weeks ahead. Use: skill `printer`.
 
 ## Keeping CLAUDE.md small
 

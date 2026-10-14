@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+"""printer: a read-only view of the owner's Bambu Lab printer, through Bambu Cloud.
+
+  printer login            owner only, in their own terminal: account login -> token file
+  printer watch            run by printer-watch.service: cloud MQTT -> ~/printer/
+  printer status [--json]  current state, how fresh it is, token expiry
+  printer events [N]       last N events (jobs started/finished/failed, errors)
+  printer history [N]      last N print jobs as recorded by Bambu Cloud
+
+Read-only by design. The only message ever sent to the printer is `pushall`, the request for a full
+status report that the Bambu apps send too. This script contains no control commands.
+
+Files: ~/.config/bambu/token.json (0600, the cloud token), ~/.config/bambu/printer.json (which printer);
+~/printer/state.json (latest merged report + summary), events.jsonl (append-only), health.json (watcher).
+The cloud token lasts about 90 days; then the owner runs `printer login` again.
+"""
+import base64
+import datetime as dt
+import getpass
+import http.cookies
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+API = "https://api.bambulab.com"
+TFA_API = "https://bambulab.com/api"
+MQTT_HOST, MQTT_PORT = "us.mqtt.bambulab.com", 8883   # global region (cn.mqtt… is China only)
+
+CONF = Path.home() / ".config/bambu"
+TOKEN, PRINTER = CONF / "token.json", CONF / "printer.json"
+DATA = Path.home() / "printer"
+STATE, EVENTS, HEALTH = DATA / "state.json", DATA / "events.jsonl", DATA / "health.json"
+
+HEADERS = {   # what the slicers send; the API is fussy about unknown clients
+    "User-Agent": "bambu_network_agent/01.09.05.01",
+    "X-BBL-Client-Name": "OrcaSlicer", "X-BBL-Client-Type": "slicer",
+    "X-BBL-Client-Version": "01.09.05.51", "X-BBL-Language": "en-US",
+    "accept": "application/json", "Content-Type": "application/json",
+}
+STATE_WRITE_EVERY = 5      # seconds between state.json writes while reports stream in
+PUSHALL_EVERY = 30 * 60    # full resync now and then; reports are mostly deltas
+WARN_DAYS = 14             # status warns when the token expires within this many days
+SPEED = {1: "silent", 2: "standard", 3: "sport", 4: "ludicrous"}
+
+
+# ---------- small helpers ----------
+
+def now():
+    return dt.datetime.now().astimezone()
+
+
+def iso(t=None):
+    return (t or now()).isoformat(timespec="seconds")
+
+
+def write_json(path, obj, private=False):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if private:
+        path.parent.chmod(0o700)
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
+    with os.fdopen(fd, "w") as f:
+        json.dump(obj, f, indent=1)
+    os.replace(tmp, path)
+
+
+def read_json(path, default=None):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def api(method, url, body=None, token=None, headers=None):
+    """-> (status, parsed json or {}, response headers). Never raises on HTTP errors."""
+    h = dict(HEADERS, **(headers or {}))
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url if url.startswith("http") else API + url, data=data, headers=h, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            raw, status, rh = r.read(), r.status, r.headers
+    except urllib.error.HTTPError as e:
+        raw, status, rh = e.read(), e.code, e.headers
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        parsed = {"_text": raw[:300].decode(errors="replace")}
+    return status, parsed, rh
+
+
+def jwt_claims(token):
+    parts = token.split(".")
+    if len(parts) != 3:
+        return {}
+    try:
+        return json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except ValueError:
+        return {}
+
+
+def load_login():
+    tok, prn = read_json(TOKEN), read_json(PRINTER)
+    if not tok or not prn:
+        sys.exit("not logged in: the owner runs `printer login` in their own terminal")
+    return tok, prn
+
+
+def days_left(tok):
+    exp = tok.get("expires_at")
+    return None if not exp else (dt.datetime.fromisoformat(exp) - now()).total_seconds() / 86400
+
+
+def packed(v):
+    """New firmware packs temperatures as target<<16 | current."""
+    return (v & 0xFFFF, (v >> 16) & 0xFFFF) if isinstance(v, int) else (None, None)
+
+
+def hms_code(e):
+    a, c = int(e.get("attr", 0)), int(e.get("code", 0))
+    return f"{a >> 16:04X}_{a & 0xFFFF:04X}_{c >> 16:04X}_{c & 0xFFFF:04X}"
+
+
+def merge(dst, src):
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            merge(dst[k], v)
+        else:
+            dst[k] = v
+    return dst
+
+
+# ---------- login ----------
+
+def cmd_login(_args):
+    if not sys.stdin.isatty():
+        sys.exit("printer login is interactive: run it in your own terminal (ssh -t personal printer login)")
+    print("Bambu Cloud login. Your password is sent to Bambu only and never stored.")
+    email = input("Bambu account email: ").strip()
+    pw = getpass.getpass("Bambu password: ")
+    st, j, _ = api("POST", "/v1/user-service/user/login", {"account": email, "password": pw, "apiError": ""})
+    pw = None
+    token = j.get("accessToken") or ""
+    if not token and j.get("loginType") == "verifyCode":
+        api("POST", "/v1/user-service/user/sendemail/code", {"email": email, "type": "codeLogin"})
+        while not token:
+            code = input("Code from Bambu's email: ").strip()
+            st, j, _ = api("POST", "/v1/user-service/user/login", {"account": email, "code": code})
+            token = j.get("accessToken") or ""
+            if not token:
+                again = j.get("code") == 1
+                print("Code expired, a new one is on its way." if again else f"Not accepted ({st}), try again.")
+                if again:
+                    api("POST", "/v1/user-service/user/sendemail/code", {"email": email, "type": "codeLogin"})
+    elif not token and j.get("loginType") == "tfa":
+        tfa_key = j.get("tfaKey")
+        code = input("Code from your authenticator app: ").strip()
+        _, _, ch = api("GET", f"{TFA_API}/csrf")
+        csrf = http.cookies.SimpleCookie()
+        for c in ch.get_all("Set-Cookie") or []:
+            csrf.load(c)
+        if "bbl_csrf_token" not in csrf:
+            sys.exit("could not get Bambu's CSRF cookie for the 2FA step")
+        t = csrf["bbl_csrf_token"].value
+        st, j, rh = api("POST", f"{TFA_API}/sign-in/tfa", {"tfaKey": tfa_key, "tfaCode": code},
+                        headers={"x-bbl-csrf-token": t, "Cookie": f"bbl_csrf_token={t}"})
+        jar = http.cookies.SimpleCookie()
+        for c in rh.get_all("Set-Cookie") or []:
+            jar.load(c)
+        token = jar["token"].value if "token" in jar else ""
+    if not token:
+        sys.exit(f"login failed ({st}): {json.dumps(j)[:300]}")
+
+    claims = jwt_claims(token)
+    username = claims.get("username")
+    if not username:
+        _, pref, _ = api("GET", "/v1/design-user-service/my/preference", token=token)
+        username = f"u_{pref['uid']}" if pref.get("uid") else None
+    if not username:
+        sys.exit("logged in, but could not find the account's user id")
+    if j.get("expiresIn"):
+        expires = now() + dt.timedelta(seconds=int(j["expiresIn"]))
+    elif claims.get("exp"):
+        expires = dt.datetime.fromtimestamp(claims["exp"]).astimezone()
+    else:
+        expires = now() + dt.timedelta(days=90)   # Bambu's usual lifetime
+
+    st, b, _ = api("GET", "/v1/iot-service/api/user/bind", token=token)
+    devices = b.get("devices") or []
+    if not devices:
+        sys.exit(f"no printers on this account ({st})")
+    dev = devices[0]
+    if len(devices) > 1:
+        for i, d in enumerate(devices):
+            print(f"  {i + 1}. {d.get('name')} ({d.get('dev_product_name')}, {d.get('dev_id')})")
+        dev = devices[int(input("Which printer? ")) - 1]
+
+    write_json(TOKEN, {"access_token": token, "username": username, "expires_at": iso(expires),
+                       "logged_in": iso()}, private=True)
+    write_json(PRINTER, {"serial": dev["dev_id"], "name": dev.get("name"),
+                         "model": dev.get("dev_product_name")}, private=True)
+    print(f"OK: {dev.get('name')} ({dev.get('dev_product_name')}). Token valid until {expires:%Y-%m-%d}.")
+    print("Start or restart the watcher: sudo systemctl enable --now printer-watch && sudo systemctl restart printer-watch")
+
+
+# ---------- summary of a merged report ----------
+
+def summarize(p):
+    dev = p.get("device") or {}
+    ext = (dev.get("extruder") or {}).get("info") or []
+
+    def temp(new_packed, cur_key, tgt_key=None):
+        cur, tgt = packed(new_packed)
+        if cur is None:
+            cur, tgt = p.get(cur_key), p.get(tgt_key) if tgt_key else None
+        return cur, tgt
+
+    nozzle = temp(ext[0].get("temp") if ext else None, "nozzle_temper", "nozzle_target_temper")
+    bed = temp((dev.get("bed") or {}).get("info", {}).get("temp"), "bed_temper", "bed_target_temper")
+    chamber = temp((dev.get("ctc") or {}).get("info", {}).get("temp"), "chamber_temper")[0]
+
+    ams_units = []
+    ams = p.get("ams") or {}
+    tray_now = str(ams.get("tray_now", ""))
+    for unit in ams.get("ams") or []:
+        trays = []
+        for t in unit.get("tray") or []:
+            tid = int(unit.get("id", 0)) * 4 + int(t.get("id", 0))
+            trays.append({"slot": int(t.get("id", 0)) + 1, "type": t.get("tray_type") or None,
+                          "brand": t.get("tray_sub_brands") or None,
+                          "color": (t.get("tray_color") or "")[:6] or None,
+                          "remain": t["remain"] if isinstance(t.get("remain"), int) and t["remain"] >= 0 else None,
+                          "active": tray_now == str(tid)})
+        ams_units.append({"unit": int(unit.get("id", 0)) + 1, "humidity": unit.get("humidity"),
+                          "temp": unit.get("temp"), "trays": trays})
+
+    err = p.get("print_error") or 0
+    return {
+        "state": p.get("gcode_state"),
+        "job": p.get("subtask_name") or p.get("gcode_file") or None,
+        "percent": p.get("mc_percent"),
+        "remaining_min": p.get("mc_remaining_time"),
+        "layer": p.get("layer_num"), "layers": p.get("total_layer_num"),
+        "stage": p.get("stg_cur"),
+        "speed": SPEED.get(p.get("spd_lvl"), p.get("spd_lvl")),
+        "nozzle": nozzle, "bed": bed, "chamber": chamber,
+        "ams": ams_units,
+        "hms": sorted(hms_code(e) for e in p.get("hms") or []),
+        "print_error": f"{err:08X}"[:4] + "_" + f"{err:08X}"[4:] if err else None,
+        "wifi": p.get("wifi_signal"),
+    }
+
+
+def events_between(old, new, meta):
+    """Compare two summaries; return events and keep per-job bookkeeping in meta."""
+    out = []
+    o, n = old.get("state"), new.get("state")
+    if n and n != o:
+        if n in ("PREPARE", "RUNNING") and o not in ("PREPARE", "RUNNING", "PAUSE"):
+            meta["job"] = {"name": new.get("job"), "started": iso(), "errors": []}
+            out.append({"event": "job_started", "job": new.get("job"), "layers": new.get("layers"),
+                        "estimate_min": new.get("remaining_min")})
+        elif n == "PAUSE":
+            out.append({"event": "paused", "job": new.get("job"), "percent": new.get("percent"),
+                        "layer": new.get("layer")})
+        elif n == "RUNNING" and o == "PAUSE":
+            out.append({"event": "resumed", "job": new.get("job")})
+        elif n in ("FINISH", "FAILED"):
+            job = meta.pop("job", None) or {}
+            started = job.get("started")
+            mins = round((now() - dt.datetime.fromisoformat(started)).total_seconds() / 60) if started else None
+            out.append({"event": "job_finished" if n == "FINISH" else "job_failed", "job": new.get("job"),
+                        "percent": new.get("percent"), "layer": new.get("layer"), "layers": new.get("layers"),
+                        "minutes": mins, "print_error": new.get("print_error"),
+                        "errors_during_job": job.get("errors", [])})
+        elif o is not None:
+            out.append({"event": "state", "from": o, "to": n})
+    for code in set(new.get("hms") or []) - set(old.get("hms") or []):
+        out.append({"event": "hms", "code": f"HMS_{code}", "job": new.get("job"), "layer": new.get("layer")})
+        if "job" in meta:
+            meta["job"]["errors"].append(f"HMS_{code}")
+    if new.get("print_error") and new.get("print_error") != old.get("print_error"):
+        out.append({"event": "print_error", "code": new["print_error"], "job": new.get("job"),
+                    "layer": new.get("layer")})
+        if "job" in meta:
+            meta["job"]["errors"].append(new["print_error"])
+    return out
+
+
+# ---------- watch ----------
+
+def cmd_watch(_args):
+    import paho.mqtt.client as mqtt   # apt: python3-paho-mqtt (only the watcher needs it)
+
+    tok, prn = load_login()
+    serial = prn["serial"]
+    saved = read_json(STATE, {}) or {}
+    raw, meta = saved.get("raw") or {}, saved.get("meta") or {}
+    summary = summarize(raw) if raw else {}
+    health = {"connected": False, "since": None, "last_message": saved.get("updated"), "error": None,
+              "token_expires": tok.get("expires_at")}
+    last_write = [0.0]
+    last_pushall = [0.0]
+
+    def save(force=False):
+        if force or time.time() - last_write[0] >= STATE_WRITE_EVERY:
+            write_json(STATE, {"updated": health["last_message"], "printer": prn, "summary": summary,
+                               "meta": meta, "raw": raw})
+            write_json(HEALTH, health)
+            last_write[0] = time.time()
+
+    def log(ev):
+        ev = {"time": iso(), **ev}
+        DATA.mkdir(parents=True, exist_ok=True)
+        with open(EVENTS, "a") as f:
+            f.write(json.dumps(ev) + "\n")
+        print(json.dumps(ev), flush=True)
+
+    def pushall(c):
+        c.publish(f"device/{serial}/request", json.dumps({"pushing": {"sequence_id": "0", "command": "pushall"}}))
+        last_pushall[0] = time.time()
+
+    def on_connect(c, _u, _f, rc, _p):
+        if rc.is_failure:
+            health.update(connected=False, error=f"connect refused: {rc}")
+            save(force=True)
+            print(f"connect refused: {rc}", flush=True)
+            if rc.value in (4, 5, 134, 135):   # bad credentials / not authorized: the token is dead
+                health["error"] = "TOKEN-EXPIRED: the owner runs `printer login`"
+                save(force=True)
+                c.disconnect()
+            return
+        health.update(connected=True, since=iso(), error=None)
+        c.subscribe(f"device/{serial}/report")
+        pushall(c)
+        print("connected", flush=True)
+
+    def on_disconnect(_c, _u, _f, rc, _p):
+        health.update(connected=False, since=iso())
+        save(force=True)
+        print(f"disconnected: {rc}", flush=True)
+
+    def on_message(c, _u, msg):
+        nonlocal summary
+        try:
+            p = json.loads(msg.payload).get("print")
+        except (json.JSONDecodeError, AttributeError):
+            return
+        if not isinstance(p, dict):
+            return
+        merge(raw, p)
+        new = summarize(raw)
+        evs = events_between(summary, new, meta) if summary else []
+        summary = new
+        health["last_message"] = iso()
+        for ev in evs:
+            log(ev)
+        save(force=bool(evs))
+        if time.time() - last_pushall[0] > PUSHALL_EVERY:
+            pushall(c)
+
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"personal-printer-{os.getpid()}")
+    c.username_pw_set(tok["username"], tok["access_token"])
+    c.tls_set()
+    c.on_connect, c.on_disconnect, c.on_message = on_connect, on_disconnect, on_message
+    c.reconnect_delay_set(min_delay=5, max_delay=300)
+    c.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
+    c.loop_start()
+    try:
+        while True:
+            time.sleep(30)
+            if health["error"] and health["error"].startswith("TOKEN-EXPIRED"):
+                c.loop_stop()
+                sys.exit(3)   # systemd retries later; a new login fixes it
+            save()
+    except KeyboardInterrupt:
+        c.loop_stop()
+        save(force=True)
+
+
+# ---------- read side ----------
+
+def fmt_temp(pair):
+    if not pair or pair[0] is None:
+        return "?"
+    cur, tgt = pair
+    return f"{cur:.0f}/{tgt:.0f}°C" if tgt else f"{cur:.0f}°C"
+
+
+def ago(ts):
+    if not ts:
+        return "never"
+    s = (now() - dt.datetime.fromisoformat(ts)).total_seconds()
+    return f"{s:.0f} s ago" if s < 120 else f"{s / 60:.0f} min ago" if s < 7200 else f"{s / 3600:.1f} h ago"
+
+
+def cmd_status(args):
+    st, health, tok = read_json(STATE), read_json(HEALTH, {}), read_json(TOKEN, {})
+    if "--json" in args:
+        print(json.dumps({"state": st and {k: st[k] for k in ("updated", "printer", "summary", "meta")},
+                          "health": health, "token_days_left": days_left(tok) if tok else None}, indent=1))
+        return
+    if not st:
+        print("no data yet: is printer-watch running? (systemctl status printer-watch)")
+    else:
+        s, prn = st["summary"], st.get("printer", {})
+        line = f"{prn.get('model', '')} \"{prn.get('name', '')}\": {s.get('state') or '?'}"
+        if s.get("state") in ("RUNNING", "PAUSE", "PREPARE"):
+            line += f"  {s.get('percent')}%  layer {s.get('layer')}/{s.get('layers')}"
+            if s.get("remaining_min") is not None:
+                eta = now() + dt.timedelta(minutes=s["remaining_min"])
+                line += f"  {s['remaining_min'] // 60}h{s['remaining_min'] % 60:02d}m left (~{eta:%H:%M})"
+        print(line)
+        if s.get("job"):
+            print(f"job: {s['job']}  speed: {s.get('speed')}")
+        print(f"nozzle {fmt_temp(s.get('nozzle'))}  bed {fmt_temp(s.get('bed'))}"
+              + (f"  chamber {s['chamber']}°C" if s.get("chamber") is not None else ""))
+        for u in s.get("ams") or []:
+            trays = " | ".join(
+                f"{t['slot']} {t['type'] or 'empty'}" + (f" {t['brand']}" if t["brand"] else "")
+                + (f" #{t['color']}" if t["color"] else "") + (f" {t['remain']}%" if t["remain"] is not None else "")
+                + (" *active*" if t["active"] else "") for t in u["trays"])
+            print(f"AMS {u['unit']} (humidity {u.get('humidity')}, {u.get('temp')}°C): {trays}")
+        errs = [f"HMS_{c}" for c in s.get("hms") or []] + ([f"print_error {s['print_error']}"] if s.get("print_error") else [])
+        print("errors: " + (", ".join(errs) if errs else "none"))
+        print(f"data: {ago(st.get('updated'))}")
+    w = "connected" if health.get("connected") else "NOT connected"
+    print(f"watcher: {w}" + (f" ({health['error']})" if health.get("error") else ""))
+    d = days_left(tok) if tok else None
+    if d is None:
+        print("token: none, the owner runs `printer login`")
+    else:
+        print(f"token: valid until {tok['expires_at'][:10]} ({d:.0f} days)"
+              + ("  << renew soon: the owner runs `printer login`" if d < WARN_DAYS else ""))
+
+
+def count(args, default):
+    nums = [a for a in args if a.isdigit()]
+    return int(nums[0]) if nums else default
+
+
+def cmd_events(args):
+    n = count(args, 20)
+    try:
+        lines = EVENTS.read_text().splitlines()[-n:]
+    except FileNotFoundError:
+        lines = []
+    print("\n".join(lines) if lines else "no events yet")
+
+
+def cmd_history(args):
+    n = count(args, 10)
+    tok, prn = load_login()
+    st, j, _ = api("GET", "/v1/user-service/my/tasks", token=tok["access_token"])
+    if st != 200:
+        sys.exit(f"Bambu Cloud said {st}: {json.dumps(j)[:200]}")
+    hits = [h for h in j.get("hits") or [] if h.get("deviceId") == prn["serial"]][:n]
+    if "--json" in args:
+        print(json.dumps(hits, indent=1))
+        return
+    for h in hits:
+        mins = round((h.get("costTime") or 0) / 60)
+        print(f"{(h.get('startTime') or '')[:16]}  status={h.get('status')}  {mins} min  "
+              f"{h.get('weight') or '?'} g  {h.get('title') or h.get('designTitle')}")
+    if not hits:
+        print("no jobs found")
+
+
+COMMANDS = {"login": cmd_login, "watch": cmd_watch, "status": cmd_status, "events": cmd_events,
+            "history": cmd_history}
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        sys.exit(__doc__)
+    COMMANDS[sys.argv[1]](sys.argv[2:])

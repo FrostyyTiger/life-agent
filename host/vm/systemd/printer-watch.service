@@ -1,0 +1,19 @@
+# Keeps ~/printer/ current from Bambu Cloud: the printer's status reports, read-only (skill `printer`).
+# NOT enabled by install.sh: it needs `printer login` first (the owner, in their own terminal), then
+# `sudo systemctl enable --now printer-watch`. An expired token makes it exit; it retries every 30 min.
+[Unit]
+Description=Bambu printer status watcher (read-only, Bambu Cloud)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=@HOME@/.config/bambu/token.json
+
+[Service]
+Type=simple
+User=@USER@
+ExecStart=/usr/bin/python3 -u @HOME@/bin/printer watch
+Restart=always
+RestartSec=30min
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

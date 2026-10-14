@@ -29,7 +29,7 @@ Pick the smallest case that applies. The backups hold the data; this repo holds 
 ## B. VM from scratch
 
 1. Debian, user with uid 1000, Tailscale (tag the node; the network policy lets it SSH to the build VM
-   only), packages: `git docker.io docker-compose-plugin samba exiftool python3 unrar 7zip tmux`.
+   only), packages: `git docker.io docker-compose-plugin samba exiftool python3 python3-paho-mqtt unrar 7zip tmux`.
 2. GitHub token (fine-grained, read-only Contents on the owner's repos), typed by the owner:
    `umask 077; read -rsp token: t; printf '%s\n' "$t" > ~/.config/github-mirror.token`.
 3. Clone both repos into `~/assistant/` (using the token), then
@@ -43,3 +43,4 @@ Pick the smallest case that applies. The backups hold the data; this repo holds 
    Rules and skills are already linked by step 3. Daily use: `ssh -t <host> tmux new -A -s assistant claude`.
 7. Remote Control (optional): see `README.md`, then `sudo systemctl enable --now assistant-remote`.
 8. `github-mirror` once by hand; check `~/github-mirror/last-run.txt`.
+9. Printer (optional): the owner runs `printer login`, then `sudo systemctl enable --now printer-watch`.
