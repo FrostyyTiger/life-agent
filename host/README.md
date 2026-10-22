@@ -8,8 +8,8 @@ details (names, addresses, the map of what lives where) are in the private `life
 | --- | --- | --- |
 | `CLAUDE.md` | `~/.claude/CLAUDE.md` (link) | the assistant's ground rules, always loaded |
 | `skills/<name>/SKILL.md` | `~/.claude/skills/<name>` (link) | how-to per module, loaded only when a task needs it |
-| `vm/bin/` | `~/bin/` (links) | `github-mirror`, `assistant-update`, `files-index`, `plan-move`, `github-env` |
-| `vm/systemd/` | `/etc/systemd/system/` (rendered) | mirror 00:30, assistant update 00:45, document export 01:00; `assistant-remote` (off until the owner enables it) |
+| `vm/bin/` | `~/bin/` (links) | `github-mirror`, `assistant-update`, `files-index`, `plan-move`, `github-env`, `mail-dump` |
+| `vm/systemd/` | `/etc/systemd/system/` (rendered) | mirror 00:30, assistant update 00:45, document export 01:00, mail copy every 15 min; `assistant-remote` (off until the owner enables it) |
 | `vm/samba/smb.conf` | `/etc/samba/smb.conf` (rendered) | tailnet-only shares `data` and `scan` |
 | `vm/paperless/` | `~/paperless/docker-compose.yml` (link) + env examples | the document server |
 | `vm/tmux.conf` | `~/.tmux.conf` (link) | the persistent assistant session |
@@ -39,6 +39,6 @@ Ctrl+C. Then `sudo systemctl enable --now assistant-remote`. Stop: `sudo systemc
 `CLAUDE.md` is in every session's context, so it holds only what must always apply: the scope, what
 needs the owner's yes, what never happens, privacy, where to look. Anything procedural goes into a
 skill: Claude Code shows only the skill's one-line description until the task needs it. A new module
-(mail, browser) adds a skill, not lines to `CLAUDE.md`.
+(browser) adds a skill, not lines to `CLAUDE.md`.
 
 Restoring: [`RESTORE.md`](RESTORE.md).
