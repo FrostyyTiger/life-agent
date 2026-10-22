@@ -208,8 +208,14 @@ def fetch_batch(svc, ids):
     batch = svc.new_batch_http_request(callback=callback)
     for gid in ids:
         batch.add(svc.users().messages().get(userId="me", id=gid, format="raw"), request_id=gid)
-    batch.execute(num_retries=5)
-    return got, retry
+    for attempt in range(5):  # BatchHttpRequest.execute has no num_retries; per-message errors land in retry
+        try:
+            batch.execute()
+            return got, retry
+        except HttpError as exc:
+            if exc.resp.status not in (429, 500, 502, 503) or attempt == 4:
+                raise
+            time.sleep(2 ** attempt * 5)
 
 
 def store(resp, labels):
