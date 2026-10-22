@@ -64,12 +64,12 @@ fi
 grep -q '^personal /data virtiofs' /etc/fstab || { echo 'personal /data virtiofs defaults,nofail 0 0' | sudo tee -a /etc/fstab; sudo mkdir -p /data; }
 # mail-dump: its own Python environment (Gmail API client + HTML to text) and the search tools.
 # Debian's python3 has no ensurepip without python3-venv; a failed venv leaves bin/python3 but no pip.
-dpkg -s python3-venv ripgrep jq >/dev/null 2>&1 || sudo apt-get install -y python3-venv ripgrep jq >/dev/null
+dpkg -s python3-venv ripgrep jq sqlite3 >/dev/null 2>&1 || sudo apt-get install -y python3-venv ripgrep jq sqlite3 >/dev/null
 if [[ ! -x "$HOME/.venvs/mail-dump/bin/pip" ]]; then
     python3 -m venv --clear "$HOME/.venvs/mail-dump"
-    "$HOME/.venvs/mail-dump/bin/pip" install --quiet google-api-python-client google-auth-oauthlib beautifulsoup4
     echo "created ~/.venvs/mail-dump"
 fi
+"$HOME/.venvs/mail-dump/bin/pip" install --quiet google-api-python-client google-auth-oauthlib beautifulsoup4 sqlite-vec
 [[ $changed -eq 1 ]] && sudo systemctl daemon-reload
 for t in github-mirror assistant-update paperless-export mail-dump; do sudo systemctl enable --now "$t.timer" >/dev/null; done
 systemctl list-timers --no-pager github-mirror.timer assistant-update.timer paperless-export.timer mail-dump.timer
