@@ -61,9 +61,10 @@ if [[ -d /etc/samba ]] && ! render "$VM/samba/smb.conf" | sudo cmp -s - /etc/sam
 fi
 grep -q '^personal /data virtiofs' /etc/fstab || { echo 'personal /data virtiofs defaults,nofail 0 0' | sudo tee -a /etc/fstab; sudo mkdir -p /data; }
 # mail-dump: its own Python environment (Gmail API client + HTML to text) and the search tools.
-command -v rg >/dev/null && command -v jq >/dev/null || sudo apt-get install -y ripgrep jq >/dev/null
-if [[ ! -x "$HOME/.venvs/mail-dump/bin/python3" ]]; then
-    python3 -m venv "$HOME/.venvs/mail-dump"
+# Debian's python3 has no ensurepip without python3-venv; a failed venv leaves bin/python3 but no pip.
+dpkg -s python3-venv ripgrep jq >/dev/null 2>&1 || sudo apt-get install -y python3-venv ripgrep jq >/dev/null
+if [[ ! -x "$HOME/.venvs/mail-dump/bin/pip" ]]; then
+    python3 -m venv --clear "$HOME/.venvs/mail-dump"
     "$HOME/.venvs/mail-dump/bin/pip" install --quiet google-api-python-client google-auth-oauthlib beautifulsoup4
     echo "created ~/.venvs/mail-dump"
 fi
