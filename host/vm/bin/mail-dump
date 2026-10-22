@@ -5,11 +5,13 @@
   mail-dump sync        fetch every message not on disk yet (the timer runs this every 15 min)
   mail-dump status      counts and the last run
   mail-dump reindex     rebuild text/ and index.jsonl from raw/ (after an extraction change)
+  mail-dump links       rebuild links.txt from raw/
 
 Layout under ~/mail (override with MAIL_DUMP_ROOT):
   raw/YYYY/MM/<date>_<time>_<id>.eml    the message exactly as Gmail has it (RFC 822)
   text/YYYY/MM/<same>.txt               headers + decoded body text, for grep
   index.jsonl                           one line per message: id, thread, date, from, to, subject, labels, paths
+  links.txt                             every link found in mail, normalized (host/path); read by mail-link-guard
   last-run.txt, mail.log                health, like github-mirror
 
 The token can only read: it cannot send, delete or change mail. Every run lists all message ids
@@ -31,6 +33,7 @@ import email
 import email.policy
 import fcntl
 import json
+import re
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -44,6 +47,7 @@ LIST_QUERY = "-in:drafts"
 BATCH = 25          # messages.get costs 5 quota units; 25 per batch stays well under 250 units/s
 PAUSE = 0.6         # seconds between batches
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Zurich"))
+URL_RE = re.compile(r"(?:https?://|www\.)[^\s\"'<>()\[\]{}]+", re.I)
 
 
 def log(msg):
@@ -124,6 +128,34 @@ def extract(raw):
         "subject": header("Subject"), "date_header": header("Date"),
         "attachments": attachments, "body": body,
     }
+
+
+def normalize_url(url):
+    """host/path, lower-case host without www., no scheme, query or fragment. Same rule as mail-link-guard."""
+    url = re.sub(r"^[a-z][a-z0-9+.-]*://", "", url.strip().rstrip(".,;:!?"), flags=re.I)
+    url = re.split(r"[?#]", url, maxsplit=1)[0]
+    host, _, path = url.partition("/")
+    host = host.rsplit("@", 1)[-1].split(":")[0].lower()
+    host = host[4:] if host.startswith("www.") else host
+    return f"{host}/{path}".rstrip("/") if host else ""
+
+
+def links_in(raw):
+    """Every link in the message's text and HTML parts (hrefs included), normalized."""
+    found = set()
+    try:
+        msg = email.message_from_bytes(raw, policy=email.policy.default)
+        for part in msg.walk():
+            if part.get_content_maintype() == "text" and not part.is_attachment():
+                try:
+                    content = part.get_content()
+                except Exception:
+                    continue
+                content = content.replace("&amp;", "&")
+                found.update(n for n in map(normalize_url, URL_RE.findall(content)) if n)
+    except Exception:
+        pass
+    return found
 
 
 def write_text(path, entry, fields):
@@ -228,6 +260,10 @@ def store(resp, labels):
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     raw_path.write_bytes(raw)
     write_text(ROOT / entry["text"], entry, fields)
+    links = links_in(raw)
+    if links:
+        with (ROOT / "links.txt").open("a") as f:
+            f.write("".join(l + "\n" for l in sorted(links)))
     return entry
 
 
@@ -317,6 +353,18 @@ def cmd_reindex(_args):
     print(f"reindexed {len(out)} messages")
 
 
+def cmd_links(_args):
+    lock = (ROOT / ".lock").open("w")
+    fcntl.flock(lock, fcntl.LOCK_EX)  # waits for a running sync, which appends to links.txt
+    found = set()
+    for path in (ROOT / "raw").rglob("*.eml"):
+        found |= links_in(path.read_bytes())
+    tmp = ROOT / "links.txt.new"
+    tmp.write_text("".join(l + "\n" for l in sorted(found)))
+    tmp.replace(ROOT / "links.txt")
+    print(f"{len(found)} distinct links")
+
+
 def main():
     os.umask(0o077)
     ROOT.mkdir(parents=True, exist_ok=True)
@@ -328,8 +376,9 @@ def main():
     s.add_argument("--budget", type=float, help="stop fetching after this many seconds")
     sub.add_parser("status")
     sub.add_parser("reindex")
+    sub.add_parser("links")
     args = p.parse_args()
-    return {"auth": cmd_auth, "sync": cmd_sync, "status": cmd_status, "reindex": cmd_reindex}[args.cmd](args) or 0
+    return {"auth": cmd_auth, "sync": cmd_sync, "status": cmd_status, "reindex": cmd_reindex, "links": cmd_links}[args.cmd](args) or 0
 
 
 if __name__ == "__main__":

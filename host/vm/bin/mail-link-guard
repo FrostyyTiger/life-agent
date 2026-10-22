@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""Claude Code PreToolUse hook: no link from the owner's mail is opened without the owner's click.
+
+Looks for URLs in the tool call (WebFetch, Bash such as curl/wget, browser and other MCP tools) and checks
+each one, normalized to host/path, against ~/mail/links.txt (written by mail-dump). On a match the hook
+answers "ask", so Claude Code shows the owner a permission prompt; with nobody there (headless runs) the
+call is refused. No URL, no links.txt, or any error: the call goes through unchanged (the rule in
+CLAUDE.md still applies).
+"""
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+LINKS = Path.home() / "mail" / "links.txt"
+URL_RE = re.compile(r"(?:https?://|www\.)[^\s\"'<>()\[\]{}\\]+", re.I)
+
+
+def normalize_url(url):
+    """Same rule as mail-dump: host/path, lower-case host without www., no scheme, query or fragment."""
+    url = re.sub(r"^[a-z][a-z0-9+.-]*://", "", url.strip().rstrip(".,;:!?"), flags=re.I)
+    url = re.split(r"[?#]", url, maxsplit=1)[0]
+    host, _, path = url.partition("/")
+    host = host.rsplit("@", 1)[-1].split(":")[0].lower()
+    host = host[4:] if host.startswith("www.") else host
+    return f"{host}/{path}".rstrip("/") if host else ""
+
+
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from strings(v)
+
+
+def main():
+    event = json.load(sys.stdin)
+    urls = {n for s in strings(event.get("tool_input", {})) for n in map(normalize_url, URL_RE.findall(s)) if n}
+    if not urls or not LINKS.is_file():
+        return
+    hit = subprocess.run(["grep", "-m1", "-xF", "-f", "-", str(LINKS)], input="\n".join(sorted(urls)) + "\n",
+                         capture_output=True, text=True, timeout=20).stdout.strip()
+    if hit:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+            "permissionDecisionReason": f"mail-link-guard: {hit} is a link from your mail. Open it only if you asked for it.",
+        }}))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        pass

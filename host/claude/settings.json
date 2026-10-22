@@ -1,0 +1,11 @@
+{
+  "theme": "dark",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "WebFetch|Bash|mcp__.*",
+        "hooks": [{ "type": "command", "command": "$HOME/bin/mail-link-guard", "timeout": 30 }]
+      }
+    ]
+  }
+}

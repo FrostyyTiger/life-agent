@@ -27,11 +27,13 @@ link() {  # link <target> <linkname>
 
 # Rules and skills: always loaded / loaded on demand by Claude Code.
 link "$HOST_DIR/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
+# Claude Code settings: the mail-link-guard hook (asks the owner before any link from mail is opened).
+link "$HOST_DIR/claude/settings.json" "$HOME/.claude/settings.json"
 for s in "$HOST_DIR"/skills/*/; do link "${s%/}" "$HOME/.claude/skills/$(basename "$s")"; done
 # Private map of this host (paths, services, hosts). Absent on a public-only checkout.
 [[ -f "$NOTES/host/MAP.md" ]] && link "$NOTES/host/MAP.md" "$HOME/assistant/MAP.md"
 # Scripts.
-for f in github-mirror github-env assistant-update files-index plan-move mail-dump; do
+for f in github-mirror github-env assistant-update files-index plan-move mail-dump mail-link-guard; do
     chmod +x "$VM/bin/$f" 2>/dev/null || true
     link "$VM/bin/$f" "$HOME/bin/$f"
 done

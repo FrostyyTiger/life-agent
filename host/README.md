@@ -7,8 +7,9 @@ details (names, addresses, the map of what lives where) are in the private `life
 | Path | Installed to | What |
 | --- | --- | --- |
 | `CLAUDE.md` | `~/.claude/CLAUDE.md` (link) | the assistant's ground rules, always loaded |
+| `claude/settings.json` | `~/.claude/settings.json` (link) | the `mail-link-guard` hook: a link found in mail opens only after the owner's click |
 | `skills/<name>/SKILL.md` | `~/.claude/skills/<name>` (link) | how-to per module, loaded only when a task needs it |
-| `vm/bin/` | `~/bin/` (links) | `github-mirror`, `assistant-update`, `files-index`, `plan-move`, `github-env`, `mail-dump` |
+| `vm/bin/` | `~/bin/` (links) | `github-mirror`, `assistant-update`, `files-index`, `plan-move`, `github-env`, `mail-dump`, `mail-link-guard` |
 | `vm/systemd/` | `/etc/systemd/system/` (rendered) | mirror 00:30, assistant update 00:45, document export 01:00, mail copy every 15 min; `assistant-remote` (off until the owner enables it) |
 | `vm/samba/smb.conf` | `/etc/samba/smb.conf` (rendered) | tailnet-only shares `data` and `scan` |
 | `vm/paperless/` | `~/paperless/docker-compose.yml` (link) + env examples | the document server |
