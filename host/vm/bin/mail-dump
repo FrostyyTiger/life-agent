@@ -6,12 +6,15 @@
   mail-dump status      counts and the last run
   mail-dump reindex     rebuild text/ and index.jsonl from raw/ (after an extraction change)
   mail-dump links       rebuild links.txt from raw/
+  mail-dump index       add new messages to mail.db (full text + embeddings from the infer room)
+  mail-dump search Q    hybrid search (words + meaning), --from/--since/--until, --mode fts|vec|hybrid
 
 Layout under ~/mail (override with MAIL_DUMP_ROOT):
   raw/YYYY/MM/<date>_<time>_<id>.eml    the message exactly as Gmail has it (RFC 822)
   text/YYYY/MM/<same>.txt               headers + decoded body text, for grep
   index.jsonl                           one line per message: id, thread, date, from, to, subject, labels, paths
   links.txt                             every link found in mail, normalized (host/path); read by mail-link-guard
+  mail.db                               SQLite: messages, FTS5 full text, chunks + bge-m3 vectors (sqlite-vec)
   last-run.txt, mail.log                health, like github-mirror
 
 The token can only read: it cannot send, delete or change mail. Every run lists all message ids
@@ -47,6 +50,10 @@ LIST_QUERY = "-in:drafts"
 BATCH = 25          # messages.get costs 5 quota units; 25 per batch stays well under 250 units/s
 PAUSE = 0.6         # seconds between batches
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Zurich"))
+EMBED_URL = os.environ.get("MAIL_EMBED_URL", "http://infer:8002/v1/embed")
+EMBED_DIM = 1024
+EMBED_BATCH = 128
+CHUNK_CHARS, CHUNK_OVERLAP, MAX_CHUNKS = 1500, 200, 12
 URL_RE = re.compile(r"(?:https?://|www\.)[^\s\"'<>()\[\]{}]+", re.I)
 
 
@@ -365,6 +372,184 @@ def cmd_links(_args):
     print(f"{len(found)} distinct links")
 
 
+# --- mail.db: table, full text, embeddings ---------------------------------------
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY, thread TEXT, date TEXT, from_addr TEXT, to_addr TEXT, cc TEXT,
+    subject TEXT, labels TEXT, attachments TEXT, raw TEXT, text TEXT, body TEXT);
+CREATE INDEX IF NOT EXISTS messages_date ON messages(date);
+CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread);
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    subject, from_addr, to_addr, body, content='messages', content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 2');
+CREATE TABLE IF NOT EXISTS chunks (
+    id INTEGER PRIMARY KEY, message_id TEXT NOT NULL, seq INTEGER, text TEXT, embedded INTEGER DEFAULT 0);
+CREATE INDEX IF NOT EXISTS chunks_pending ON chunks(embedded);
+"""
+
+
+def db_connect():
+    import sqlite3
+    import sqlite_vec
+
+    conn = sqlite3.connect(ROOT / "mail.db", timeout=60)
+    conn.row_factory = sqlite3.Row
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript(SCHEMA)
+    conn.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(embedding float[{EMBED_DIM}] distance_metric=cosine)")
+    return conn
+
+
+def body_of(text_path):
+    content = (ROOT / text_path).read_text(errors="replace")
+    return content.split("\n\n", 1)[1] if "\n\n" in content else ""
+
+
+def chunk(entry, body):
+    """Pieces of the body, each prefixed with subject and sender so a piece is found by its context too."""
+    head = f"{entry['subject']}\nFrom: {entry['from']}\n"
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    step = CHUNK_CHARS - CHUNK_OVERLAP
+    pieces = [body[i:i + CHUNK_CHARS] for i in range(0, max(len(body), 1), step)][:MAX_CHUNKS]
+    return [head + p for p in pieces]
+
+
+def embed(texts):
+    import urllib.request
+
+    req = urllib.request.Request(EMBED_URL, json.dumps({"texts": texts}).encode(), {"content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        return json.load(resp)["vectors"]
+
+
+def cmd_index(_args):
+    import sqlite_vec
+
+    lock = (ROOT / ".index.lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("another index run is going; nothing to do")
+        return 0
+    conn = db_connect()
+    have = {r[0] for r in conn.execute("SELECT id FROM messages")}
+    added = 0
+    with (ROOT / "index.jsonl").open() as f:
+        for line in f:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue  # a line still being written by sync
+            if e["id"] in have or not (ROOT / e["text"]).is_file():
+                continue
+            have.add(e["id"])
+            body = body_of(e["text"])
+            text_content = (ROOT / e["text"]).read_text(errors="replace")
+            cc = next((l[4:] for l in text_content.splitlines()[:6] if l.startswith("Cc: ")), "")
+            cur = conn.execute(
+                "INSERT INTO messages(id, thread, date, from_addr, to_addr, cc, subject, labels, attachments, raw, text, body) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (e["id"], e["thread"], e["date"], e["from"], e["to"], cc, e["subject"], ", ".join(e["labels"]),
+                 ", ".join(e["attachments"]), e["raw"], e["text"], body))
+            conn.execute("INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body) VALUES (?,?,?,?,?)",
+                         (cur.lastrowid, e["subject"], e["from"], e["to"], body))
+            conn.executemany("INSERT INTO chunks(message_id, seq, text) VALUES (?,?,?)",
+                             [(e["id"], i, c) for i, c in enumerate(chunk(e, body))])
+            added += 1
+            if added % 1000 == 0:
+                conn.commit()
+    conn.commit()
+    log(f"index: {added} new messages")
+
+    embedded = 0
+    while True:
+        rows = conn.execute("SELECT id, text FROM chunks WHERE embedded = 0 LIMIT ?", (EMBED_BATCH,)).fetchall()
+        if not rows:
+            break
+        try:
+            vectors = embed([r["text"] for r in rows])
+        except Exception as exc:
+            log(f"index: embeddings unavailable ({exc.__class__.__name__}: {exc}); full text is up to date, vectors next run")
+            break
+        conn.executemany("INSERT OR REPLACE INTO vec_chunks(rowid, embedding) VALUES (?, ?)",
+                         [(r["id"], sqlite_vec.serialize_float32(v)) for r, v in zip(rows, vectors)])
+        conn.executemany("UPDATE chunks SET embedded = 1 WHERE id = ?", [(r["id"],) for r in rows])
+        conn.commit()
+        embedded += len(rows)
+        if embedded % 10240 < EMBED_BATCH:
+            log(f"index: {embedded} chunks embedded")
+    pending = conn.execute("SELECT count(*) FROM chunks WHERE embedded = 0").fetchone()[0]
+    log(f"index: {embedded} chunks embedded, {pending} pending")
+    return 0
+
+
+def fts_query(q):
+    """Plain words to an FTS5 query: every word must occur (prefix match), quotes keep a phrase."""
+    phrases = re.findall(r'"([^"]+)"', q)
+    words = re.findall(r"[\w@.-]+", re.sub(r'"[^"]+"', " ", q))
+    parts = ['"' + p.replace('"', "") + '"' for p in phrases] + ['"' + w.replace('"', "") + '"*' for w in words]
+    return " ".join(parts)
+
+
+def cmd_search(args):
+    import sqlite_vec
+
+    conn = db_connect()
+    where, params = [], []
+    if args.sender:
+        where.append("m.from_addr LIKE ?"); params.append(f"%{args.sender}%")
+    if args.since:
+        where.append("m.date >= ?"); params.append(args.since)
+    if args.until:
+        where.append("m.date < ?"); params.append(args.until)
+    filt = (" AND " + " AND ".join(where)) if where else ""
+    pool = max(args.limit * 5, 100)
+    ranks = {}
+
+    if args.mode in ("fts", "hybrid"):
+        match = fts_query(args.query)
+        if match:
+            rows = conn.execute(
+                "SELECT m.id FROM messages_fts f JOIN messages m ON m.rowid = f.rowid "
+                f"WHERE messages_fts MATCH ? {filt} ORDER BY bm25(messages_fts, 5.0, 2.0, 1.0, 1.0) LIMIT ?",
+                [match, *params, pool]).fetchall()
+            for i, r in enumerate(rows):
+                ranks.setdefault(r["id"], []).append(i)
+    if args.mode in ("vec", "hybrid"):
+        try:
+            qv = embed([args.query])[0]
+        except Exception as exc:
+            if args.mode == "vec":
+                sys.exit(f"embeddings unavailable: {exc}")
+            print(f"(meaning search unavailable: {exc.__class__.__name__}; words only)", file=sys.stderr)
+        else:
+            rows = conn.execute(
+                "SELECT c.message_id AS id, min(v.distance) AS d FROM "
+                "(SELECT rowid, distance FROM vec_chunks WHERE embedding MATCH ? AND k = ?) v "
+                f"JOIN chunks c ON c.id = v.rowid JOIN messages m ON m.id = c.message_id WHERE 1 {filt} "
+                "GROUP BY c.message_id ORDER BY d LIMIT ?",
+                [sqlite_vec.serialize_float32(qv), pool * 4, *params, pool]).fetchall()
+            for i, r in enumerate(rows):
+                ranks.setdefault(r["id"], []).append(i)
+
+    scored = sorted(ranks, key=lambda mid: -sum(1 / (60 + i) for i in ranks[mid]))[:args.limit]
+    out = []
+    for mid in scored:
+        m = conn.execute("SELECT id, thread, date, from_addr, subject, labels, attachments, text FROM messages WHERE id = ?",
+                         (mid,)).fetchone()
+        out.append(dict(m))
+    if args.json:
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+    else:
+        for m in out:
+            print(f"{m['date'][:16]}  {m['from_addr'][:40]:40}  {m['subject'][:70]}\n    {ROOT / m['text']}")
+    return 0
+
+
 def main():
     os.umask(0o077)
     ROOT.mkdir(parents=True, exist_ok=True)
@@ -377,8 +562,18 @@ def main():
     sub.add_parser("status")
     sub.add_parser("reindex")
     sub.add_parser("links")
+    sub.add_parser("index")
+    q = sub.add_parser("search")
+    q.add_argument("query")
+    q.add_argument("--mode", choices=["hybrid", "fts", "vec"], default="hybrid")
+    q.add_argument("--from", dest="sender", help="substring of the sender")
+    q.add_argument("--since", help="YYYY-MM-DD, inclusive")
+    q.add_argument("--until", help="YYYY-MM-DD, exclusive")
+    q.add_argument("--limit", type=int, default=20)
+    q.add_argument("--json", action="store_true")
     args = p.parse_args()
-    return {"auth": cmd_auth, "sync": cmd_sync, "status": cmd_status, "reindex": cmd_reindex, "links": cmd_links}[args.cmd](args) or 0
+    return {"auth": cmd_auth, "sync": cmd_sync, "status": cmd_status, "reindex": cmd_reindex, "links": cmd_links,
+            "index": cmd_index, "search": cmd_search}[args.cmd](args) or 0
 
 
 if __name__ == "__main__":

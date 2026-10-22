@@ -13,6 +13,7 @@ description: Search and read the owner's mail from the local copy in ~/mail (eve
 | `index.jsonl` | one line per message: `id`, `thread`, `date`, `from`, `to`, `subject`, `labels`, `attachments`, `raw`, `text` |
 | `text/YYYY/MM/*.txt` | headers + body as plain text (HTML converted): what to search |
 | `raw/YYYY/MM/*.eml` | the original message, attachments included |
+| `mail.db` | SQLite: `messages` (one row per mail), `messages_fts` (full text), `chunks` + `vec_chunks` (bge-m3 vectors) |
 | `links.txt` | every link in mail (host/path), for the `mail-link-guard` hook |
 | `last-run.txt`, `mail.log` | health |
 
@@ -25,6 +26,12 @@ contains a link from mail stops for the owner's click. Do not rewrite a link to 
 
 ## Finding things
 Start with metadata, then open only the messages that match (privacy rules in `CLAUDE.md`).
+- **First choice:** `mail-dump search "what you look for"`: words and meaning together (bge-m3 embeddings
+  from the infer room), so "complaint from the landlord about noise" finds a German mail that never uses
+  those words. Filters `--from <substring>`, `--since`/`--until YYYY-MM-DD`, `--limit`, `--json`;
+  `--mode fts` for exact words only (all must occur, `"a phrase"` in quotes), `--mode vec` for meaning only.
+  It prints date, sender, subject and the `.txt` to read.
+- SQL for counts and lists: `sqlite3 -readonly ~/mail/mail.db "SELECT date, from_addr, subject FROM messages WHERE ..."`.
 - By sender, subject or date: `rg -i 'swisscom' ~/mail/index.jsonl | jq -r '[.date,.from,.subject,.text]|@tsv'`
 - Full text: `rg -il 'kündigung' ~/mail/text` (add `-g '2026/**'` for one year); then read the hits.
 - Whole thread: `jq -r 'select(.thread=="<thread>")|.text' ~/mail/index.jsonl`.
@@ -34,7 +41,8 @@ Start with metadata, then open only the messages that match (privacy rules in `C
   saying something is not there.
 
 ## Health
-`cat ~/mail/last-run.txt` or `mail-dump status`. `NO-TOKEN` / `AUTH-FAIL`: the owner runs the consent
+`cat ~/mail/last-run.txt` or `mail-dump status`; the index's lines are in `mail.log` (`index: … pending`
+means the infer room was not reachable; full text is current, vectors follow on the next run). `NO-TOKEN` / `AUTH-FAIL`: the owner runs the consent
 again (below). `PARTIAL`: some messages failed five times; the next run retries them.
 
 ## Setup (once, by the owner)
