@@ -1,0 +1,12 @@
+[Unit]
+Description=Copy new Gmail messages to ~/mail (read-only)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=@HOME@/.config/mail-dump/token.json
+
+[Service]
+Type=oneshot
+User=@USER@
+ExecStart=/bin/sh -c 'exec @HOME@/bin/mail-dump sync >>@HOME@/mail/mail.log 2>&1'
+Nice=10
+IOSchedulingClass=idle

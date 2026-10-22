@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""Copy the owner's Gmail to plain files, read-only, so the assistant can search all of it.
+
+  mail-dump auth        one-time OAuth consent (gmail.readonly), via an SSH port forward
+  mail-dump sync        fetch every message not on disk yet (the timer runs this every 15 min)
+  mail-dump status      counts and the last run
+  mail-dump reindex     rebuild text/ and index.jsonl from raw/ (after an extraction change)
+
+Layout under ~/mail (override with MAIL_DUMP_ROOT):
+  raw/YYYY/MM/<date>_<time>_<id>.eml    the message exactly as Gmail has it (RFC 822)
+  text/YYYY/MM/<same>.txt               headers + decoded body text, for grep
+  index.jsonl                           one line per message: id, thread, date, from, to, subject, labels, paths
+  last-run.txt, mail.log                health, like github-mirror
+
+The token can only read: it cannot send, delete or change mail. Every run lists all message ids
+(spam, trash and drafts excluded) and fetches the missing ones, newest first. Nothing is ever
+deleted here: mail deleted in Gmail stays on disk. Credentials in ~/.config/mail-dump/
+(google-client.json placed by the owner, token.json written by `auth`), both 0600.
+"""
+import os
+import sys
+from pathlib import Path
+
+VENV = Path.home() / ".venvs" / "mail-dump"
+if Path(sys.prefix).resolve() != VENV.resolve() and (VENV / "bin" / "python3").exists():
+    os.execv(str(VENV / "bin" / "python3"), [str(VENV / "bin" / "python3"), sys.argv[0], *sys.argv[1:]])
+
+import argparse
+import base64
+import email
+import email.policy
+import fcntl
+import json
+import time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+ROOT = Path(os.environ.get("MAIL_DUMP_ROOT", Path.home() / "mail"))
+CONF = Path.home() / ".config" / "mail-dump"
+CLIENT_FILE = CONF / "google-client.json"
+TOKEN_FILE = CONF / "token.json"
+SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+LIST_QUERY = "-in:drafts"
+BATCH = 25          # messages.get costs 5 quota units; 25 per batch stays well under 250 units/s
+PAUSE = 0.6         # seconds between batches
+TZ = ZoneInfo(os.environ.get("TZ", "Europe/Zurich"))
+
+
+def log(msg):
+    print(f"{datetime.now().isoformat(timespec='seconds')} {msg}", flush=True)
+
+
+def last_run(state, summary):
+    (ROOT / "last-run.txt").write_text(f"{datetime.now().isoformat(timespec='seconds')} {state} {summary}\n")
+
+
+# --- auth -------------------------------------------------------------------
+
+def cmd_auth(_args):
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    if not CLIENT_FILE.is_file():
+        sys.exit(f"missing {CLIENT_FILE}: a Google Cloud OAuth client (Desktop app, Gmail API, "
+                 "consent screen in Production) downloaded as JSON, mode 0600")
+    print("Opens a local server on port 8765. From your computer, in a second terminal:\n"
+          "  ssh -L 8765:localhost:8765 <this-host>\n"
+          "then open the printed URL there and allow read-only access.\n")
+    flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_FILE), scopes=[SCOPE])
+    creds = flow.run_local_server(port=8765, open_browser=False)
+    TOKEN_FILE.write_text(creds.to_json())
+    TOKEN_FILE.chmod(0o600)
+    print(f"wrote {TOKEN_FILE}")
+
+
+def service():
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    if not TOKEN_FILE.is_file():
+        return None
+    creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), [SCOPE])
+    if not creds.valid:
+        creds.refresh(Request())
+        TOKEN_FILE.write_text(creds.to_json())
+        TOKEN_FILE.chmod(0o600)
+    return build("gmail", "v1", credentials=creds, cache_discovery=False)
+
+
+# --- extraction ---------------------------------------------------------------
+
+def html_to_text(html):
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "head"]):
+        tag.decompose()
+    lines = (line.strip() for line in soup.get_text("\n").splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+def extract(raw):
+    """Headers, attachment names and the body as text. Never fails: a broken part becomes a note."""
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+
+    def header(name):
+        try:
+            return str(msg.get(name, "") or "")
+        except Exception:
+            return ""
+
+    body, attachments = "", []
+    try:
+        part = msg.get_body(preferencelist=("plain", "html"))
+        if part is not None:
+            content = part.get_content()
+            body = html_to_text(content) if part.get_content_subtype() == "html" else content
+        for att in msg.iter_attachments():
+            attachments.append(att.get_filename() or att.get_content_type())
+    except Exception as exc:
+        body = f"(body could not be decoded: {exc.__class__.__name__})"
+    return {
+        "from": header("From"), "to": header("To"), "cc": header("Cc"),
+        "subject": header("Subject"), "date_header": header("Date"),
+        "attachments": attachments, "body": body,
+    }
+
+
+def write_text(path, entry, fields):
+    head = [
+        f"Date: {entry['date']}", f"From: {fields['from']}", f"To: {fields['to']}",
+    ]
+    if fields["cc"]:
+        head.append(f"Cc: {fields['cc']}")
+    head += [
+        f"Subject: {fields['subject']}",
+        f"Labels: {', '.join(entry['labels'])}",
+        f"Attachments: {', '.join(fields['attachments']) or '-'}",
+        f"Gmail-Id: {entry['id']}  Thread: {entry['thread']}",
+        f"Raw: {entry['raw']}",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(head) + "\n\n" + fields["body"].strip() + "\n", errors="replace")
+
+
+def index_entry(gid, thread, internal_ms, labels, fields, stem):
+    when = datetime.fromtimestamp(internal_ms / 1000, tz=timezone.utc).astimezone(TZ)
+    sub = f"{when:%Y}/{when:%m}"
+    return {
+        "id": gid, "thread": thread, "date": when.isoformat(timespec="seconds"),
+        "from": fields["from"], "to": fields["to"], "subject": fields["subject"],
+        "labels": labels, "attachments": fields["attachments"],
+        "raw": f"raw/{sub}/{stem}.eml", "text": f"text/{sub}/{stem}.txt",
+    }
+
+
+def stem_for(gid, internal_ms):
+    when = datetime.fromtimestamp(internal_ms / 1000, tz=timezone.utc).astimezone(TZ)
+    return f"{when:%Y-%m-%d_%H%M}_{gid}"
+
+
+# --- sync ---------------------------------------------------------------------
+
+def known_ids():
+    path = ROOT / "index.jsonl"
+    if not path.is_file():
+        return set()
+    ids = set()
+    with path.open() as f:
+        for line in f:
+            try:
+                ids.add(json.loads(line)["id"])
+            except (ValueError, KeyError):
+                pass
+    return ids
+
+
+def list_ids(svc):
+    ids, token = [], None
+    while True:
+        resp = svc.users().messages().list(userId="me", q=LIST_QUERY, includeSpamTrash=False,
+                                           maxResults=500, pageToken=token).execute(num_retries=5)
+        ids += [m["id"] for m in resp.get("messages", [])]
+        token = resp.get("nextPageToken")
+        if not token:
+            return ids
+
+
+def label_names(svc):
+    resp = svc.users().labels().list(userId="me").execute(num_retries=5)
+    return {l["id"]: l["name"] for l in resp.get("labels", [])}
+
+
+def fetch_batch(svc, ids):
+    """Returns ({id: message resource}, [ids to retry later]). A 404 (deleted meanwhile) is dropped."""
+    from googleapiclient.errors import HttpError
+
+    got, retry = {}, []
+
+    def callback(rid, resp, exc):
+        if exc is None:
+            got[rid] = resp
+        elif isinstance(exc, HttpError) and exc.resp.status == 404:
+            pass
+        else:
+            retry.append(rid)
+
+    batch = svc.new_batch_http_request(callback=callback)
+    for gid in ids:
+        batch.add(svc.users().messages().get(userId="me", id=gid, format="raw"), request_id=gid)
+    batch.execute(num_retries=5)
+    return got, retry
+
+
+def store(resp, labels):
+    gid, ms = resp["id"], int(resp["internalDate"])
+    raw = base64.urlsafe_b64decode(resp["raw"] + "==")
+    stem = stem_for(gid, ms)
+    fields = extract(raw)
+    entry = index_entry(gid, resp["threadId"], ms, [labels.get(l, l) for l in resp.get("labelIds", [])], fields, stem)
+    raw_path = ROOT / entry["raw"]
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_bytes(raw)
+    write_text(ROOT / entry["text"], entry, fields)
+    return entry
+
+
+def cmd_sync(args):
+    lock = (ROOT / ".lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("another sync is running; nothing to do")
+        return 0
+    deadline = time.monotonic() + args.budget if args.budget else None
+    try:
+        svc = service()
+    except Exception as exc:
+        log(f"token refresh failed: {exc}")
+        last_run("AUTH-FAIL", "run `mail-dump auth` again")
+        return 1
+    if svc is None:
+        log(f"no token at {TOKEN_FILE}; nothing to do")
+        last_run("NO-TOKEN", "run `mail-dump auth`")
+        return 1
+
+    labels = label_names(svc)
+    have = known_ids()
+    missing = [i for i in list_ids(svc) if i not in have]
+    log(f"{len(have)} on disk, {len(missing)} to fetch")
+
+    fetched, failed, tries = 0, [], {}
+    queue = missing
+    with (ROOT / "index.jsonl").open("a") as index:
+        while queue:
+            if deadline and time.monotonic() > deadline:
+                log("budget used up; the next run continues")
+                break
+            ids, queue = queue[:BATCH], queue[BATCH:]
+            got, retry = fetch_batch(svc, ids)
+            for gid in ids:
+                if gid in got:
+                    index.write(json.dumps(store(got[gid], labels), ensure_ascii=False) + "\n")
+                    fetched += 1
+            index.flush()
+            for gid in retry:
+                tries[gid] = tries.get(gid, 0) + 1
+                (queue.append if tries[gid] < 5 else failed.append)(gid)
+            time.sleep(PAUSE * (4 if retry else 1))
+            if fetched and fetched % 1000 < BATCH:
+                log(f"{fetched} fetched")
+
+    left = len(queue) + len(failed)
+    summary = f"on disk {len(have) + fetched}, fetched {fetched}, left {left}"
+    log(summary)
+    last_run("OK" if not failed else "PARTIAL", summary)
+    return 0
+
+
+# --- status / reindex -----------------------------------------------------------
+
+def cmd_status(_args):
+    print(f"root      {ROOT}")
+    print(f"token     {'present' if TOKEN_FILE.is_file() else 'missing (mail-dump auth)'}")
+    print(f"messages  {len(known_ids())}")
+    lr = ROOT / "last-run.txt"
+    print(f"last run  {lr.read_text().strip() if lr.is_file() else '-'}")
+
+
+def cmd_reindex(_args):
+    entries = []
+    with (ROOT / "index.jsonl").open() as f:
+        for line in f:
+            try:
+                entries.append(json.loads(line))
+            except ValueError:
+                pass
+    seen, out = set(), []
+    for e in entries:
+        if e["id"] in seen:
+            continue
+        seen.add(e["id"])
+        raw = (ROOT / e["raw"]).read_bytes()
+        fields = extract(raw)
+        e.update({k: fields[k] for k in ("from", "to", "subject", "attachments")})
+        write_text(ROOT / e["text"], e, fields)
+        out.append(e)
+    tmp = ROOT / "index.jsonl.new"
+    tmp.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in out))
+    tmp.replace(ROOT / "index.jsonl")
+    print(f"reindexed {len(out)} messages")
+
+
+def main():
+    os.umask(0o077)
+    ROOT.mkdir(parents=True, exist_ok=True)
+    CONF.mkdir(parents=True, exist_ok=True)
+    p = argparse.ArgumentParser(prog="mail-dump", description=__doc__.split("\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("auth")
+    s = sub.add_parser("sync")
+    s.add_argument("--budget", type=float, help="stop fetching after this many seconds")
+    sub.add_parser("status")
+    sub.add_parser("reindex")
+    args = p.parse_args()
+    return {"auth": cmd_auth, "sync": cmd_sync, "status": cmd_status, "reindex": cmd_reindex}[args.cmd](args) or 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
