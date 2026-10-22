@@ -3,10 +3,13 @@
 #
 #   install.sh --user     links only, no sudo (safe to run any time; run nightly by assistant-update)
 #   install.sh --system   also renders systemd units, the Samba config and /usr/local/sbin helpers (sudo)
+#   Never run the script itself with sudo.
 #
 # Expects ~/assistant/life-agent (public) and ~/assistant/life-agent-notes (private, holds host/MAP.md).
 # Existing files that would be replaced by a link are kept as <file>.bak-<date>. Idempotent.
 set -euo pipefail
+# Run as the owner, never under sudo: @USER@/@HOME@ in the units come from this shell, and it calls sudo itself.
+[[ $EUID -ne 0 ]] || { echo "install.sh: run as the owner, not root (it uses sudo where needed)" >&2; exit 1; }
 MODE="${1:---user}"
 HOST_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"   # life-agent/host
 VM="$HOST_DIR/vm"
